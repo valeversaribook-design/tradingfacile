@@ -223,83 +223,94 @@ function renderReportBlob(trades, layout, tab, deposit, credit, withdrawal) {
   canvas.height = 1792;
   const ctx = canvas.getContext("2d");
 
-  const dark = layout === "dark";
+  const isDark = layout === "mt5_dark" || layout === "mt4_dark" || layout === "dark";
+  const isMT5 = layout === "mt5_dark" || layout === "mt5_light";
+  const isMT4 = layout === "mt4_dark" || layout === "mt4_light";
   const compact = layout === "compact";
-  ctx.fillStyle = dark ? "#080808" : "#ffffff";
+
+  const bg = isDark ? "#05070b" : "#ffffff";
+  const panel = isDark ? "#0d1118" : "#ffffff";
+  const line = isDark ? "#222b38" : "#e5e7eb";
+  const main = isDark ? "#f8fafc" : "#111827";
+  const muted = isDark ? "#a7b0bf" : "#5f6673";
+  const blue = isMT5 ? "#2f9cff" : "#2386e8";
+  const red = isMT5 ? "#ff4d5f" : "#e1323c";
+  const green = "#22c55e";
+  const nav = isDark ? "#151a23" : "#f3f4f6";
+  const selected = isDark ? "#2a3344" : "#ffffff";
+
+  ctx.fillStyle = bg;
   ctx.fillRect(0, 0, 828, 1792);
 
-  const blue = "#2391f0";
-  const red = "#e1323c";
-  const main = dark ? "#fff" : "#151515";
-  const muted = dark ? "#d0d0d0" : "#555";
-  const grey = dark ? "#b0b0b0" : "#707070";
-  const line = dark ? "#2d2d2d" : "#e6e6e6";
+  // Barra superiore stile MT4/MT5.
+  if (isMT4 || isMT5 || layout === "white" || layout === "compact" || layout === "dark") {
+    const navX = isDark ? 35 : 95;
+    const navY = isDark ? 35 : 24;
+    const navW = isDark ? 758 : 618;
+    const navH = isDark ? 82 : 66;
+    ctx.fillStyle = nav;
+    ctx.strokeStyle = isDark ? "#374151" : "#d6d9df";
+    roundRect(ctx, navX, navY, navW, navH, isDark ? 42 : 8, true, true);
 
-  if (dark) {
-    ctx.fillStyle = "#161616";
-    ctx.strokeStyle = "#464646";
-    roundRect(ctx, 35, 35, 758, 82, 42, true, true);
     ["Day", "Week", "Month", "Custom"].forEach((t, i) => {
-      const x = 35 + i * 758 / 4;
+      const x = navX + i * navW / 4;
       if (t === tab) {
-        ctx.fillStyle = "#414141";
-        roundRect(ctx, x + 8, 43, 758 / 4 - 16, 66, 36, true, false);
+        ctx.fillStyle = selected;
+        roundRect(ctx, x + 6, navY + 6, navW / 4 - 12, navH - 12, isDark ? 34 : 6, true, false);
       }
-      ctx.fillStyle = "#fff";
-      ctx.font = "700 32px Arial";
-      ctx.fillText(t, x + 758 / 8 - ctx.measureText(t).width / 2, 89);
-    });
-  } else {
-    ctx.fillStyle = "#eee";
-    ctx.strokeStyle = "#ddd";
-    roundRect(ctx, 95, 24, 618, 66, 8, true, true);
-    ["Day", "Week", "Month", "Custom"].forEach((t, i) => {
-      const x = 95 + i * 618 / 4;
-      if (t === tab) {
-        ctx.fillStyle = "#fff";
-        roundRect(ctx, x + 4, 28, 618 / 4 - 8, 58, 6, true, false);
-      }
-      ctx.fillStyle = "#151515";
-      ctx.font = "700 30px Arial";
-      ctx.fillText(t, x + 618 / 8 - ctx.measureText(t).width / 2, 67);
+      ctx.fillStyle = main;
+      ctx.font = isMT5 ? "700 29px Arial" : "700 30px Arial";
+      ctx.fillText(t, x + navW / 8 - ctx.measureText(t).width / 2, navY + navH / 2 + 11);
     });
   }
 
-  const top = dark ? 150 : 118;
-  const rowH = compact ? 96 : (dark ? 106 : 116);
-  const maxRows = compact ? 11 : (dark ? 10 : 9);
+  // Piccola intestazione stile terminale broker.
+  if (isMT5 || isMT4) {
+    ctx.font = "700 24px Arial";
+    ctx.fillStyle = muted;
+    ctx.fillText(isMT5 ? "History" : "Account History", 20, 132);
+  }
+
+  const top = isDark ? 160 : 118;
+  const rowH = compact ? 96 : (isDark ? 106 : 116);
+  const maxRows = compact ? 11 : (isDark ? 10 : 9);
 
   trades.slice(0, maxRows).forEach((t, i) => {
     const y = top + i * rowH;
+
+    ctx.fillStyle = panel;
+    if (isMT5 || isMT4) ctx.fillRect(0, y, 828, rowH);
+
     ctx.strokeStyle = line;
     ctx.beginPath();
     ctx.moveTo(0, y + rowH - 2);
     ctx.lineTo(828, y + rowH - 2);
     ctx.stroke();
 
-    ctx.font = "700 32px Arial";
+    ctx.font = "700 31px Arial";
     ctx.fillStyle = main;
-    ctx.fillText("XAUUSD, ", 20, y + (dark ? 34 : 40));
+    ctx.fillText("XAUUSD, ", 20, y + (isDark ? 35 : 40));
 
     const bw = ctx.measureText("XAUUSD, ").width;
     ctx.fillStyle = t.side === "buy" ? blue : red;
-    ctx.fillText(`${t.side} ${Number(t.lot).toFixed(2)}`, 20 + bw, y + (dark ? 34 : 40));
+    ctx.fillText(`${t.side} ${Number(t.lot).toFixed(2)}`, 20 + bw, y + (isDark ? 35 : 40));
 
     ctx.font = "28px Arial";
     ctx.fillStyle = muted;
-    ctx.fillText(`${price(t.entry)} → ${price(t.exit)}`, 20, y + (dark ? 78 : 86));
+    ctx.fillText(`${price(t.entry)} → ${price(t.exit)}`, 20, y + (isDark ? 80 : 86));
 
-    ctx.font = "700 26px Arial";
+    ctx.font = "700 25px Arial";
     const dt = reportDate(t.closeTime);
     ctx.fillStyle = muted;
-    ctx.fillText(dt, 808 - ctx.measureText(dt).width, y + (dark ? 42 : 46));
+    ctx.fillText(dt, 808 - ctx.measureText(dt).width, y + (isDark ? 42 : 46));
 
     ctx.font = "700 32px Arial";
     const pp = money(t.profit);
-    ctx.fillStyle = Number(t.profit) >= 0 ? blue : red;
-    ctx.fillText(pp, 808 - ctx.measureText(pp).width, y + (dark ? 84 : 92));
+    ctx.fillStyle = Number(t.profit) >= 0 ? (isMT4 || isMT5 ? blue : green) : red;
+    ctx.fillText(pp, 808 - ctx.measureText(pp).width, y + (isDark ? 84 : 92));
   });
 
+  // Riepilogo finale.
   const sy = 1792 - 315;
   ctx.strokeStyle = line;
   ctx.beginPath();
@@ -307,20 +318,40 @@ function renderReportBlob(trades, layout, tab, deposit, credit, withdrawal) {
   ctx.lineTo(828, sy);
   ctx.stroke();
 
-  [
+  const rows = [
     ["Profit:", totalProfit],
     ["Credit:", Number(credit || 0)],
     ["Deposit:", Number(deposit || 0)],
     ["Withdrawal:", Number(withdrawal || 0)],
     ["Balance:", balance]
-  ].forEach((r, i) => {
+  ];
+
+  rows.forEach((r, i) => {
     const y = sy + 50 + i * 40;
     ctx.font = "700 32px Arial";
-    ctx.fillStyle = grey;
+    ctx.fillStyle = muted;
     ctx.fillText(r[0], 20, y);
     const val = money(r[1]);
     ctx.fillText(val, 798 - ctx.measureText(val).width, y);
   });
+
+  // Barra inferiore stile app mobile MT5.
+  if (isMT5) {
+    ctx.fillStyle = isDark ? "#151a23" : "#f9fafb";
+    ctx.strokeStyle = line;
+    roundRect(ctx, 35, 1640, 758, 100, 50, true, true);
+    const items = ["Quotes", "Chart", "Trade", "History", "Settings"];
+    items.forEach((item, i) => {
+      const x = 35 + i * 758 / 5 + 758 / 10;
+      if (item === "History") {
+        ctx.fillStyle = isDark ? "#2a3344" : "#dbeafe";
+        roundRect(ctx, x - 64, 1650, 128, 78, 38, true, false);
+      }
+      ctx.fillStyle = item === "History" ? blue : muted;
+      ctx.font = "700 19px Arial";
+      ctx.fillText(item, x - ctx.measureText(item).width / 2, 1710);
+    });
+  }
 
   return new Promise(resolve => canvas.toBlob(resolve, "image/png"));
 }
@@ -330,7 +361,7 @@ export default function LucaTradingAuto() {
   const [trades, setTrades] = useState([]);
   const [autoSets, setAutoSets] = useState([]);
 
-  const [layout, setLayout] = useState("white");
+  const [layout, setLayout] = useState("mt5_light");
   const [tab, setTab] = useState("Week");
   const [pointValue, setPointValue] = useState(100);
   const [deposit, setDeposit] = useState(0);
@@ -671,7 +702,7 @@ export default function LucaTradingAuto() {
         <h2>1. Settaggi</h2>
         <div className="grid">
           <label>CSV TradingView/OANDA<input type="file" accept=".csv" onChange={e => e.target.files?.[0] && loadCSV(e.target.files[0])}/></label>
-          <label>Layout<select value={layout} onChange={e => setLayout(e.target.value)}><option value="white">Bianco classico</option><option value="compact">Bianco compatto</option><option value="dark">Nero</option></select></label>
+          <label>Layout<select value={layout} onChange={e => setLayout(e.target.value)}><option value="mt5_light">MT5 bianco</option><option value="mt5_dark">MT5 nero</option><option value="mt4_light">MT4 bianco</option><option value="mt4_dark">MT4 nero</option><option value="white">Vecchio bianco</option><option value="compact">Vecchio compatto</option><option value="dark">Vecchio nero</option></select></label>
           <label>Tab report<select value={tab} onChange={e => setTab(e.target.value)}><option>Day</option><option>Week</option><option>Month</option><option>Custom</option></select></label>
           <label>Valore punto 1 lotto<input type="number" value={pointValue} onChange={e => setPointValue(e.target.value)}/></label>
           <label>Deposit<input type="number" value={deposit} onChange={e => setDeposit(e.target.value)}/></label>
