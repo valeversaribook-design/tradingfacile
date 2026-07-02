@@ -152,22 +152,36 @@ function nearestOHLC(c, target) {
   , values[0]);
 }
 
-function pickCandleNear(pool, target, startIndex = 0, endIndex = pool.length - 1) {
+function pickCandleNear(pool, target, startIndex = 0, endIndex = pool.length - 1, usedIds = new Set()) {
   const from = Math.max(0, startIndex);
   const to = Math.min(pool.length - 1, endIndex);
-  let best = null;
+  const candidates = [];
 
   for (let i = from; i <= to; i++) {
     const c = pool[i];
-    const nearest = nearestOHLC(c, target);
-    const distance = target === null || Number.isNaN(target) ? Math.random() : Math.abs(nearest.value - target);
+    if (usedIds.has(c.id)) continue;
 
-    if (!best || distance < best.distance) {
-      best = { index: i, candle: c, value: nearest.value, source: nearest.label, distance };
-    }
+    const nearest = nearestOHLC(c, target);
+    const distance = target === null || Number.isNaN(target)
+      ? Math.random()
+      : Math.abs(nearest.value - target);
+
+    candidates.push({
+      index: i,
+      candle: c,
+      value: nearest.value,
+      source: nearest.label,
+      distance
+    });
   }
 
-  return best;
+  if (!candidates.length) return null;
+
+  // Non prende sempre il valore più vicino assoluto, perché altrimenti ripete sempre la stessa candela/orario.
+  // Prende uno dei migliori candidati vicini, così resta fedele al CSV ma varia gli orari.
+  candidates.sort((a, b) => a.distance - b.distance);
+  const top = candidates.slice(0, Math.min(25, candidates.length));
+  return choose(top);
 }
 
 function withRandomSecond(d) {
@@ -445,34 +459,39 @@ export default function LucaTradingAuto() {
     });
   }
 
-  function buildTrade(wantPositive, pool, sc) {
+  function buildTrade(wantPositive, pool, sc, usedIds = new Set()) {
     const openTarget = sc?.open !== null && !Number.isNaN(sc?.open) ? sc.open : null;
     const closeTarget = sc?.close !== null && !Number.isNaN(sc?.close) ? sc.close : null;
 
-    for (let tries = 0; tries < 900; tries++) {
+    for (let tries = 0; tries < 1200; tries++) {
       let openPick;
       let closePick;
 
-      // Regola fondamentale:
-      // i prezzi generati sono SEMPRE valori reali presi dal CSV: open/high/low/close della candela.
-      // Se compili uno scenario, quel valore viene usato solo come riferimento:
-      // l'app prende il valore OHLC reale più vicino nel CSV.
+      // Prezzi sempre presi dal CSV. Se metti uno scenario, usa il valore come riferimento
+      // e pesca tra i valori OHLC reali più vicini, evitando di ripetere sempre la stessa candela.
       if (openTarget !== null) {
-        openPick = pickCandleNear(pool, openTarget, 0, pool.length - 2);
+        openPick = pickCandleNear(pool, openTarget, 0, pool.length - 2, usedIds);
       } else {
-        const a = randInt(0, pool.length - 2);
-        const c1 = pool[a];
+        const available = pool.slice(0, -1).filter(c => !usedIds.has(c.id));
+        if (!available.length) continue;
+        const c1 = choose(available);
+        const a = pool.findIndex(c => c.id === c1.id);
         const v1 = choose(ohlcValues(c1));
         openPick = { index: a, candle: c1, value: v1.value, source: v1.label };
       }
 
       if (!openPick) continue;
 
+      const tempUsed = new Set(usedIds);
+      tempUsed.add(openPick.candle.id);
+
       if (closeTarget !== null) {
-        closePick = pickCandleNear(pool, closeTarget, openPick.index + 1, pool.length - 1);
+        closePick = pickCandleNear(pool, closeTarget, openPick.index + 1, pool.length - 1, tempUsed);
       } else {
-        const b = randInt(openPick.index + 1, pool.length - 1);
-        const c2 = pool[b];
+        const availableClose = pool.slice(openPick.index + 1).filter(c => !tempUsed.has(c.id));
+        if (!availableClose.length) continue;
+        const c2 = choose(availableClose);
+        const b = pool.findIndex(c => c.id === c2.id);
         const v2 = choose(ohlcValues(c2));
         closePick = { index: b, candle: c2, value: v2.value, source: v2.label };
       }
@@ -494,6 +513,9 @@ export default function LucaTradingAuto() {
 
       if (wantPositive && profit <= 0) continue;
       if (!wantPositive && profit >= 0) continue;
+
+      usedIds.add(openPick.candle.id);
+      usedIds.add(closePick.candle.id);
 
       return {
         side,
@@ -531,15 +553,17 @@ export default function LucaTradingAuto() {
           const pool = validTimePool(day);
           if (pool.length < 5) continue;
 
+          const usedIds = new Set();
+
           for (let i = 0; i < Number(autoPositive || 0); i++) {
             const sc = scs[scenarioCursor++ % scs.length];
-            const t = buildTrade(true, pool, sc);
+            const t = buildTrade(true, pool, sc, usedIds);
             if (t) arr.push(t);
           }
 
           for (let i = 0; i < Number(autoNegative || 0); i++) {
             const sc = scs[scenarioCursor++ % scs.length];
-            const t = buildTrade(false, pool, sc);
+            const t = buildTrade(false, pool, sc, usedIds);
             if (t) arr.push(t);
           }
         }
