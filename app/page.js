@@ -114,7 +114,7 @@ function money(v) {
 }
 
 function price(v) {
-  return Number(v || 0).toFixed(3);
+  return Number(v || 0).toFixed(2);
 }
 
 function pnl(side, entry, exit, lot, pointValue) {
@@ -269,7 +269,7 @@ function renderReportBlob(trades, layout, tab, deposit, credit, withdrawal) {
 
     const bw = ctx.measureText("XAUUSD, ").width;
     ctx.fillStyle = t.side === "buy" ? blue : red;
-    ctx.fillText(`${t.side} ${Number(t.lot).toFixed(3)}`, 20 + bw, y + (dark ? 34 : 40));
+    ctx.fillText(`${t.side} ${Number(t.lot).toFixed(2)}`, 20 + bw, y + (dark ? 34 : 40));
 
     ctx.font = "28px Arial";
     ctx.fillStyle = muted;
@@ -489,7 +489,7 @@ export default function LucaTradingAuto() {
           : (exit >= entry ? "sell" : "buy");
       }
 
-      const lot = Number(rand(Number(lotMin), Number(lotMax)).toFixed(3));
+      const lot = Number(rand(Number(lotMin), Number(lotMax)).toFixed(2));
       const profit = Number(pnl(side, entry, exit, lot, Number(pointValue)).toFixed(2));
 
       if (wantPositive && profit <= 0) continue;
@@ -502,8 +502,8 @@ export default function LucaTradingAuto() {
         closeCandleId: closePick.candle.id,
         openTime: withRandomSecond(openPick.candle.time),
         closeTime: withRandomSecond(closePick.candle.time),
-        entry: Number(entry.toFixed(3)),
-        exit: Number(exit.toFixed(3)),
+        entry: Number(entry.toFixed(2)),
+        exit: Number(exit.toFixed(2)),
         entrySource: openPick.source,
         exitSource: closePick.source,
         profit
@@ -599,7 +599,7 @@ export default function LucaTradingAuto() {
       const blob = await renderReportBlob(set.trades, layout, tab, deposit, credit, withdrawal);
       zip.file(`${set.name}.png`, blob);
       set.trades.forEach(t => {
-        rows.push(`${set.name},${t.side},${Number(t.lot).toFixed(3)},${itDate(t.openTime)},${price(t.entry)},${itDate(t.closeTime)},${price(t.exit)},${Number(t.profit).toFixed(2)}`);
+        rows.push(`${set.name},${t.side},${Number(t.lot).toFixed(2)},${itDate(t.openTime)},${price(t.entry)},${itDate(t.closeTime)},${price(t.exit)},${Number(t.profit).toFixed(2)}`);
       });
     }
 
@@ -614,7 +614,7 @@ export default function LucaTradingAuto() {
     if (!base) return alert("Carica prima il CSV.");
 
     const side = "buy";
-    const lot = 0.050;
+    const lot = 0.05;
     const entry = base.open;
     const exit = next.close;
 
@@ -670,17 +670,17 @@ export default function LucaTradingAuto() {
           <label>Negative per giorno<input type="number" value={autoNegative} onChange={e => setAutoNegative(e.target.value)}/></label>
           <label>Profitto totale min<input type="number" value={profitMin} onChange={e => setProfitMin(e.target.value)}/></label>
           <label>Profitto totale max<input type="number" value={profitMax} onChange={e => setProfitMax(e.target.value)}/></label>
-          <label>Lotto min<input type="number" step="0.001" value={lotMin} onChange={e => setLotMin(e.target.value)}/></label>
-          <label>Lotto max<input type="number" step="0.001" value={lotMax} onChange={e => setLotMax(e.target.value)}/></label>
+          <label>Lotto min<input type="number" step="0.01" value={lotMin} onChange={e => setLotMin(e.target.value)}/></label>
+          <label>Lotto max<input type="number" step="0.01" value={lotMax} onChange={e => setLotMax(e.target.value)}/></label>
         </div>
 
         <h3>3 scenari opzionali</h3>
         <p className="hint">Lascia vuoto ciò che vuoi automatico. Se scrivi un prezzo, l’app prende dal CSV il valore reale OHLC più vicino: open, high, low o close.</p>
         <div className="scenario-grid">
           <b>Scenario</b><b>Tipo</b><b>Apertura</b><b>Chiusura</b>
-          <span>1</span><select value={scenario1Side} onChange={e => setScenario1Side(e.target.value)}><option value="auto">Automatico</option><option value="buy">BUY</option><option value="sell">SELL</option></select><input type="number" step="0.001" value={scenario1Open} onChange={e => setScenario1Open(e.target.value)} placeholder="automatico"/><input type="number" step="0.001" value={scenario1Close} onChange={e => setScenario1Close(e.target.value)} placeholder="automatico"/>
-          <span>2</span><select value={scenario2Side} onChange={e => setScenario2Side(e.target.value)}><option value="auto">Automatico</option><option value="buy">BUY</option><option value="sell">SELL</option></select><input type="number" step="0.001" value={scenario2Open} onChange={e => setScenario2Open(e.target.value)} placeholder="automatico"/><input type="number" step="0.001" value={scenario2Close} onChange={e => setScenario2Close(e.target.value)} placeholder="automatico"/>
-          <span>3</span><select value={scenario3Side} onChange={e => setScenario3Side(e.target.value)}><option value="auto">Automatico</option><option value="buy">BUY</option><option value="sell">SELL</option></select><input type="number" step="0.001" value={scenario3Open} onChange={e => setScenario3Open(e.target.value)} placeholder="automatico"/><input type="number" step="0.001" value={scenario3Close} onChange={e => setScenario3Close(e.target.value)} placeholder="automatico"/>
+          <span>1</span><select value={scenario1Side} onChange={e => setScenario1Side(e.target.value)}><option value="auto">Automatico</option><option value="buy">BUY</option><option value="sell">SELL</option></select><input type="number" step="0.01" value={scenario1Open} onChange={e => setScenario1Open(e.target.value)} placeholder="automatico"/><input type="number" step="0.01" value={scenario1Close} onChange={e => setScenario1Close(e.target.value)} placeholder="automatico"/>
+          <span>2</span><select value={scenario2Side} onChange={e => setScenario2Side(e.target.value)}><option value="auto">Automatico</option><option value="buy">BUY</option><option value="sell">SELL</option></select><input type="number" step="0.01" value={scenario2Open} onChange={e => setScenario2Open(e.target.value)} placeholder="automatico"/><input type="number" step="0.01" value={scenario2Close} onChange={e => setScenario2Close(e.target.value)} placeholder="automatico"/>
+          <span>3</span><select value={scenario3Side} onChange={e => setScenario3Side(e.target.value)}><option value="auto">Automatico</option><option value="buy">BUY</option><option value="sell">SELL</option></select><input type="number" step="0.01" value={scenario3Open} onChange={e => setScenario3Open(e.target.value)} placeholder="automatico"/><input type="number" step="0.01" value={scenario3Close} onChange={e => setScenario3Close(e.target.value)} placeholder="automatico"/>
         </div>
 
         <div className="actions">
@@ -722,13 +722,13 @@ export default function LucaTradingAuto() {
               <tr key={i}>
                 <td>{i + 1}</td>
                 <td><select className="table-input" value={t.side} onChange={e => updateTrade(i, "side", e.target.value)}><option value="buy">BUY</option><option value="sell">SELL</option></select></td>
-                <td><input className="table-input small" type="number" step="0.001" value={t.lot} onChange={e => updateTrade(i, "lot", e.target.value)}/></td>
+                <td><input className="table-input small" type="number" step="0.01" value={t.lot} onChange={e => updateTrade(i, "lot", e.target.value)}/></td>
                 <td><input className="table-input date" type="date" value={htmlDate(t.openTime)} onChange={e => updateTrade(i, "openDate", e.target.value)}/></td>
                 <td><input className="table-input time" value={htmlTime(t.openTime)} onChange={e => updateTrade(i, "openTime", e.target.value)}/></td>
-                <td><input className="table-input price" type="number" step="0.001" value={t.entry} onChange={e => updateTrade(i, "entry", e.target.value)}/>{t.entrySource && <small className="source">CSV {t.entrySource}</small>}</td>
+                <td><input className="table-input price" type="number" step="0.01" value={t.entry} onChange={e => updateTrade(i, "entry", e.target.value)}/>{t.entrySource && <small className="source">CSV {t.entrySource}</small>}</td>
                 <td><input className="table-input date" type="date" value={htmlDate(t.closeTime)} onChange={e => updateTrade(i, "closeDate", e.target.value)}/></td>
                 <td><input className="table-input time" value={htmlTime(t.closeTime)} onChange={e => updateTrade(i, "closeTime", e.target.value)}/></td>
-                <td><input className="table-input price" type="number" step="0.001" value={t.exit} onChange={e => updateTrade(i, "exit", e.target.value)}/>{t.exitSource && <small className="source">CSV {t.exitSource}</small>}</td>
+                <td><input className="table-input price" type="number" step="0.01" value={t.exit} onChange={e => updateTrade(i, "exit", e.target.value)}/>{t.exitSource && <small className="source">CSV {t.exitSource}</small>}</td>
                 <td className={Number(t.profit) >= 0 ? "pos" : "neg"}>{money(t.profit)}</td>
                 <td><button onClick={() => setTrades(trades.filter((_, x) => x !== i))}>×</button></td>
               </tr>
