@@ -152,36 +152,22 @@ function nearestOHLC(c, target) {
   , values[0]);
 }
 
-function pickCandleNear(pool, target, startIndex = 0, endIndex = pool.length - 1, usedIds = new Set()) {
+function pickCandleNear(pool, target, startIndex = 0, endIndex = pool.length - 1) {
   const from = Math.max(0, startIndex);
   const to = Math.min(pool.length - 1, endIndex);
-  const candidates = [];
+  let best = null;
 
   for (let i = from; i <= to; i++) {
     const c = pool[i];
-    if (usedIds.has(c.id)) continue;
-
     const nearest = nearestOHLC(c, target);
-    const distance = target === null || Number.isNaN(target)
-      ? Math.random()
-      : Math.abs(nearest.value - target);
+    const distance = target === null || Number.isNaN(target) ? Math.random() : Math.abs(nearest.value - target);
 
-    candidates.push({
-      index: i,
-      candle: c,
-      value: nearest.value,
-      source: nearest.label,
-      distance
-    });
+    if (!best || distance < best.distance) {
+      best = { index: i, candle: c, value: nearest.value, source: nearest.label, distance };
+    }
   }
 
-  if (!candidates.length) return null;
-
-  // Non prende sempre il valore più vicino assoluto, perché altrimenti ripete sempre la stessa candela/orario.
-  // Prende uno dei migliori candidati vicini, così resta fedele al CSV ma varia gli orari.
-  candidates.sort((a, b) => a.distance - b.distance);
-  const top = candidates.slice(0, Math.min(25, candidates.length));
-  return choose(top);
+  return best;
 }
 
 function withRandomSecond(d) {
@@ -218,140 +204,226 @@ function renderReportBlob(trades, layout, tab, deposit, credit, withdrawal) {
   const totalProfit = trades.reduce((a, t) => a + Number(t.profit || 0), 0);
   const balance = Number(deposit || 0) + Number(credit || 0) - Number(withdrawal || 0) + totalProfit;
 
+  const isDark = layout.includes("dark");
+  const isAndroid = layout.includes("android");
+  const isMT5 = layout.includes("mt5");
+  const isMT4 = layout.includes("mt4");
+
   const canvas = document.createElement("canvas");
   canvas.width = 828;
   canvas.height = 1792;
   const ctx = canvas.getContext("2d");
 
-  const isDark = layout === "mt5_dark" || layout === "mt4_dark" || layout === "dark";
-  const isMT5 = layout === "mt5_dark" || layout === "mt5_light";
-  const isMT4 = layout === "mt4_dark" || layout === "mt4_light";
-  const compact = layout === "compact";
-
-  const bg = isDark ? "#05070b" : "#ffffff";
-  const panel = isDark ? "#0d1118" : "#ffffff";
-  const line = isDark ? "#222b38" : "#e5e7eb";
-  const main = isDark ? "#f8fafc" : "#111827";
-  const muted = isDark ? "#a7b0bf" : "#5f6673";
-  const blue = isMT5 ? "#2f9cff" : "#2386e8";
-  const red = isMT5 ? "#ff4d5f" : "#e1323c";
-  const green = "#22c55e";
-  const nav = isDark ? "#151a23" : "#f3f4f6";
-  const selected = isDark ? "#2a3344" : "#ffffff";
+  const bg = isDark ? "#000000" : "#ffffff";
+  const text = isDark ? "#f8f8f8" : "#0b0b0b";
+  const muted = isDark ? "#c9c9c9" : "#5c5c5c";
+  const line = isDark ? "#252525" : "#e7e7e7";
+  const blue = "#2997ff";
+  const red = "#e22b36";
+  const soft = isDark ? "#171717" : "#eeeeee";
+  const soft2 = isDark ? "#3b3b3b" : "#ffffff";
 
   ctx.fillStyle = bg;
   ctx.fillRect(0, 0, 828, 1792);
 
-  // Barra superiore stile MT4/MT5.
-  if (isMT4 || isMT5 || layout === "white" || layout === "compact" || layout === "dark") {
-    const navX = isDark ? 35 : 95;
-    const navY = isDark ? 35 : 24;
-    const navW = isDark ? 758 : 618;
-    const navH = isDark ? 82 : 66;
-    ctx.fillStyle = nav;
-    ctx.strokeStyle = isDark ? "#374151" : "#d6d9df";
-    roundRect(ctx, navX, navY, navW, navH, isDark ? 42 : 8, true, true);
-
-    ["Day", "Week", "Month", "Custom"].forEach((t, i) => {
-      const x = navX + i * navW / 4;
-      if (t === tab) {
-        ctx.fillStyle = selected;
-        roundRect(ctx, x + 6, navY + 6, navW / 4 - 12, navH - 12, isDark ? 34 : 6, true, false);
-      }
-      ctx.fillStyle = main;
-      ctx.font = isMT5 ? "700 29px Arial" : "700 30px Arial";
-      ctx.fillText(t, x + navW / 8 - ctx.measureText(t).width / 2, navY + navH / 2 + 11);
-    });
+  function drawText(str, x, y, size = 24, weight = "400", color = text, align = "left") {
+    ctx.font = `${weight} ${size}px Arial`;
+    ctx.fillStyle = color;
+    ctx.textAlign = align;
+    ctx.fillText(str, x, y);
+    ctx.textAlign = "left";
   }
 
-  // Piccola intestazione stile terminale broker.
-  if (isMT5 || isMT4) {
-    ctx.font = "700 24px Arial";
-    ctx.fillStyle = muted;
-    ctx.fillText(isMT5 ? "History" : "Account History", 20, 132);
-  }
-
-  const top = isDark ? 160 : 118;
-  const rowH = compact ? 96 : (isDark ? 106 : 116);
-  const maxRows = compact ? 11 : (isDark ? 10 : 9);
-
-  trades.slice(0, maxRows).forEach((t, i) => {
-    const y = top + i * rowH;
-
-    ctx.fillStyle = panel;
-    if (isMT5 || isMT4) ctx.fillRect(0, y, 828, rowH);
-
+  function lineY(y) {
     ctx.strokeStyle = line;
+    ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.moveTo(0, y + rowH - 2);
-    ctx.lineTo(828, y + rowH - 2);
+    ctx.moveTo(0, y);
+    ctx.lineTo(828, y);
     ctx.stroke();
+  }
 
-    ctx.font = "700 31px Arial";
-    ctx.fillStyle = main;
-    ctx.fillText("XAUUSD, ", 20, y + (isDark ? 35 : 40));
+  function drawStatusBar() {
+    if (isAndroid) {
+      drawText("12:30", 14, 36, 26, "700", isDark ? "#f2f2f2" : "#000");
+      drawText("4G+", 610, 36, 20, "700", isDark ? "#f2f2f2" : "#000");
+      drawText("41%", 760, 36, 22, "700", isDark ? "#f2f2f2" : "#000");
+      return;
+    }
+    drawText(isMT4 ? "15:43" : "12:31", 102, 70, 32, "700", isDark ? "#fff" : "#111");
+    drawText("▮▮▮", 585, 68, 26, "700", isDark ? "#fff" : "#111");
+    drawText(isDark ? "⌁" : "5G", 640, 68, 30, "700", isDark ? "#fff" : "#111");
+    drawText(isDark ? "▰" : "65", 704, 68, 22, "700", isDark ? "#fff" : "#111");
+  }
 
-    const bw = ctx.measureText("XAUUSD, ").width;
-    ctx.fillStyle = t.side === "buy" ? blue : red;
-    ctx.fillText(`${t.side} ${Number(t.lot).toFixed(2)}`, 20 + bw, y + (isDark ? 35 : 40));
+  function drawTopTabs(y = 120) {
+    if (isAndroid && isDark) return;
+    const x = isDark ? 34 : (isMT4 ? 130 : 34);
+    const w = isDark ? 760 : (isMT4 ? 568 : 760);
+    const h = isDark ? 100 : (isMT4 ? 64 : 52);
+    const r = isDark ? 50 : (isMT4 ? 11 : 9);
 
-    ctx.font = "28px Arial";
-    ctx.fillStyle = muted;
-    ctx.fillText(`${price(t.entry)} → ${price(t.exit)}`, 20, y + (isDark ? 80 : 86));
+    ctx.fillStyle = soft;
+    ctx.strokeStyle = isDark ? "#3c3c3c" : "#d9d9d9";
+    roundRect(ctx, x, y, w, h, r, true, true);
 
-    ctx.font = "700 25px Arial";
-    const dt = reportDate(t.closeTime);
-    ctx.fillStyle = muted;
-    ctx.fillText(dt, 808 - ctx.measureText(dt).width, y + (isDark ? 42 : 46));
-
-    ctx.font = "700 32px Arial";
-    const pp = money(t.profit);
-    ctx.fillStyle = Number(t.profit) >= 0 ? (isMT4 || isMT5 ? blue : green) : red;
-    ctx.fillText(pp, 808 - ctx.measureText(pp).width, y + (isDark ? 84 : 92));
-  });
-
-  // Riepilogo finale.
-  const sy = 1792 - 315;
-  ctx.strokeStyle = line;
-  ctx.beginPath();
-  ctx.moveTo(0, sy);
-  ctx.lineTo(828, sy);
-  ctx.stroke();
-
-  const rows = [
-    ["Profit:", totalProfit],
-    ["Credit:", Number(credit || 0)],
-    ["Deposit:", Number(deposit || 0)],
-    ["Withdrawal:", Number(withdrawal || 0)],
-    ["Balance:", balance]
-  ];
-
-  rows.forEach((r, i) => {
-    const y = sy + 50 + i * 40;
-    ctx.font = "700 32px Arial";
-    ctx.fillStyle = muted;
-    ctx.fillText(r[0], 20, y);
-    const val = money(r[1]);
-    ctx.fillText(val, 798 - ctx.measureText(val).width, y);
-  });
-
-  // Barra inferiore stile app mobile MT5.
-  if (isMT5) {
-    ctx.fillStyle = isDark ? "#151a23" : "#f9fafb";
-    ctx.strokeStyle = line;
-    roundRect(ctx, 35, 1640, 758, 100, 50, true, true);
-    const items = ["Quotes", "Chart", "Trade", "History", "Settings"];
-    items.forEach((item, i) => {
-      const x = 35 + i * 758 / 5 + 758 / 10;
-      if (item === "History") {
-        ctx.fillStyle = isDark ? "#2a3344" : "#dbeafe";
-        roundRect(ctx, x - 64, 1650, 128, 78, 38, true, false);
+    ["Day", "Week", "Month", "Custom"].forEach((name, i) => {
+      const segX = x + i * w / 4;
+      if (name === tab) {
+        ctx.fillStyle = soft2;
+        roundRect(ctx, segX + (isDark ? 10 : 6), y + (isDark ? 10 : 5), w / 4 - (isDark ? 20 : 12), h - (isDark ? 20 : 10), isDark ? 42 : 8, true, false);
       }
-      ctx.fillStyle = item === "History" ? blue : muted;
-      ctx.font = "700 19px Arial";
-      ctx.fillText(item, x - ctx.measureText(item).width / 2, 1710);
+      if (isMT4 && !isDark && i > 0) {
+        ctx.strokeStyle = "#d0d0d0";
+        ctx.beginPath();
+        ctx.moveTo(segX, y + 9);
+        ctx.lineTo(segX, y + h - 9);
+        ctx.stroke();
+      }
+      drawText(name, segX + w / 8, y + h / 2 + 11, isMT5 ? 26 : 25, "700", isDark ? "#fff" : "#111", "center");
     });
   }
+
+  function drawAndroidHeader() {
+    if (!(isAndroid && isDark)) return;
+    drawText("☰", 28, 76, 30, "400", "#d8d8d8");
+    drawText("History", 60, 63, 28, "400", "#e5e5e5");
+    drawText("All symbols", 60, 100, 20, "400", "#b8b8b8");
+    drawText("$", 730, 83, 22, "700", "#d8d8d8");
+    drawText("↕", 770, 83, 22, "700", "#d8d8d8");
+    drawText("▦", 805, 83, 22, "700", "#d8d8d8", "right");
+    lineY(118);
+  }
+
+  function drawAndroidSummary() {
+    if (!(isAndroid && isDark)) return 260;
+    const y0 = 150;
+    [["Profit:", totalProfit], ["Deposit:", Number(deposit || 0)], ["Balance:", balance]].forEach((r, i) => {
+      const y = y0 + i * 36;
+      drawText(r[0], 28, y, 30, "700", "#d0d0d0");
+      ctx.strokeStyle = "#3b3b3b";
+      ctx.setLineDash([2, 6]);
+      ctx.beginPath();
+      ctx.moveTo(160, y - 8);
+      ctx.lineTo(700, y - 8);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      drawText(money(r[1]), 805, y, 30, "700", i === 0 ? blue : "#d0d0d0", "right");
+    });
+    lineY(258);
+    return 300;
+  }
+
+  function drawRows(startY) {
+    const rows = trades.slice(0, isAndroid && isDark ? 9 : 8);
+    const rowH = isAndroid && isDark ? 116 : (isMT4 ? 132 : 88);
+
+    rows.forEach((t, i) => {
+      const y = startY + i * rowH;
+      ctx.fillStyle = bg;
+      ctx.fillRect(0, y, 828, rowH);
+      lineY(y + rowH);
+
+      const sym = isMT5 ? "XAUUSD-STD" : "XAUUSD";
+      const sideColor = t.side === "buy" ? blue : red;
+      const profitColor = Number(t.profit) >= 0 ? blue : red;
+
+      if (isAndroid && isDark) {
+        drawText(`${sym}, `, 14, y + 38, 28, "700", "#d7d7d7");
+        const sw = ctx.measureText(`${sym}, `).width;
+        drawText(`${t.side} ${Number(t.lot).toFixed(2)}`, 14 + sw, y + 38, 28, "700", sideColor);
+        drawText(`${price(t.entry)} → ${price(t.exit)}`, 14, y + 86, 30, "400", "#d7d7d7");
+        drawText(reportDate(t.closeTime), 810, y + 36, 27, "700", "#d0d0d0", "right");
+        drawText(money(t.profit), 810, y + 88, 30, "700", profitColor, "right");
+        return;
+      }
+
+      drawText(`${sym}, `, 20, y + (isMT4 ? 48 : 34), isMT4 ? 31 : 30, "900", text);
+      const sw = ctx.measureText(`${sym}, `).width;
+      drawText(`${t.side} ${Number(t.lot).toFixed(2)}`, 20 + sw, y + (isMT4 ? 48 : 34), isMT4 ? 31 : 30, "900", sideColor);
+      drawText(`${price(t.entry)} → ${price(t.exit)}`, 20, y + (isMT4 ? 100 : 67), isMT4 ? 33 : 30, "400", muted);
+      drawText(reportDate(t.closeTime), 810, y + (isMT4 ? 44 : 34), isMT4 ? 26 : 22, "700", muted, "right");
+      drawText(money(t.profit), 810, y + (isMT4 ? 100 : 67), isMT4 ? 32 : 28, "900", profitColor, "right");
+    });
+    return startY + rows.length * rowH;
+  }
+
+  function drawSummary(y) {
+    if (isAndroid && isDark) return;
+    const minY = isMT5 ? 1390 : 1030;
+    const sy = Math.max(y + 16, minY);
+    lineY(sy - 20);
+
+    [["Profit:", totalProfit], ["Credit:", Number(credit || 0)], ["Deposit:", Number(deposit || 0)], ["Withdrawal:", Number(withdrawal || 0)], ["Balance:", balance]].forEach((r, i) => {
+      const yy = sy + 38 + i * 42;
+      drawText(r[0], 20, yy, 32, "900", muted);
+      drawText(money(r[1]), 810, yy, 32, "900", muted, "right");
+    });
+  }
+
+  function drawBottomNav() {
+    if (isAndroid && isDark) {
+      ctx.fillStyle = "#050505";
+      ctx.fillRect(0, 1585, 828, 207);
+      ctx.fillStyle = "#0b0b0b";
+      ctx.fillRect(0, 1470, 828, 115);
+      ["↙", "▥", "▣", "▰", "▤", "●"].forEach((it, i) => {
+        const x = 80 + i * 135;
+        if (i === 3) {
+          ctx.fillStyle = "#1b1b1b";
+          roundRect(ctx, x - 46, 1500, 92, 60, 30, true, false);
+        }
+        drawText(it, x, 1540, 34, "700", i === 3 ? blue : "#a5a5a5", "center");
+      });
+      drawText("Ⅲ", 190, 1728, 36, "400", "#e5e5e5", "center");
+      drawText("○", 414, 1728, 42, "400", "#e5e5e5", "center");
+      drawText("‹", 650, 1728, 48, "400", "#e5e5e5", "center");
+      return;
+    }
+
+    const y = 1650;
+    lineY(y - 20);
+
+    if (isDark) {
+      ctx.fillStyle = "#151515";
+      roundRect(ctx, 45, y - 5, 738, 110, 55, true, false);
+    } else {
+      ctx.fillStyle = "#fbfbfb";
+      ctx.fillRect(0, y - 10, 828, 140);
+    }
+
+    const items = ["Quotes", "Chart", "Trade", "History", "Settings"];
+    const icons = ["↗", "▥", "↗", "▰", "⚙"];
+    items.forEach((item, i) => {
+      const x = 70 + i * 172;
+      if (item === "History") {
+        ctx.fillStyle = isDark ? "#3a3a3a" : "#dce6ff";
+        roundRect(ctx, x - 58, y + 6, 116, 76, isDark ? 38 : 10, true, false);
+      }
+      drawText(icons[i], x, y + 42, 34, "900", item === "History" ? "#0767e8" : "#9a9a9a", "center");
+      drawText(item, x, y + 78, 18, "700", item === "History" ? "#0767e8" : "#777", "center");
+    });
+
+    if (!isDark) {
+      ctx.fillStyle = "#000";
+      roundRect(ctx, 275, 1768, 280, 8, 4, true, false);
+    }
+  }
+
+  drawStatusBar();
+  drawAndroidHeader();
+
+  let startY;
+  if (isAndroid && isDark) {
+    startY = drawAndroidSummary();
+  } else {
+    drawTopTabs(isDark ? 120 : (isMT4 ? 128 : 120));
+    startY = isDark ? 240 : (isMT4 ? 208 : 195);
+  }
+
+  const afterRows = drawRows(startY);
+  drawSummary(afterRows);
+  drawBottomNav();
 
   return new Promise(resolve => canvas.toBlob(resolve, "image/png"));
 }
@@ -361,7 +433,7 @@ export default function LucaTradingAuto() {
   const [trades, setTrades] = useState([]);
   const [autoSets, setAutoSets] = useState([]);
 
-  const [layout, setLayout] = useState("mt5_light");
+  const [layout, setLayout] = useState("ios_mt5_white");
   const [tab, setTab] = useState("Week");
   const [pointValue, setPointValue] = useState(100);
   const [deposit, setDeposit] = useState(0);
@@ -490,39 +562,34 @@ export default function LucaTradingAuto() {
     });
   }
 
-  function buildTrade(wantPositive, pool, sc, usedIds = new Set()) {
+  function buildTrade(wantPositive, pool, sc) {
     const openTarget = sc?.open !== null && !Number.isNaN(sc?.open) ? sc.open : null;
     const closeTarget = sc?.close !== null && !Number.isNaN(sc?.close) ? sc.close : null;
 
-    for (let tries = 0; tries < 1200; tries++) {
+    for (let tries = 0; tries < 900; tries++) {
       let openPick;
       let closePick;
 
-      // Prezzi sempre presi dal CSV. Se metti uno scenario, usa il valore come riferimento
-      // e pesca tra i valori OHLC reali più vicini, evitando di ripetere sempre la stessa candela.
+      // Regola fondamentale:
+      // i prezzi generati sono SEMPRE valori reali presi dal CSV: open/high/low/close della candela.
+      // Se compili uno scenario, quel valore viene usato solo come riferimento:
+      // l'app prende il valore OHLC reale più vicino nel CSV.
       if (openTarget !== null) {
-        openPick = pickCandleNear(pool, openTarget, 0, pool.length - 2, usedIds);
+        openPick = pickCandleNear(pool, openTarget, 0, pool.length - 2);
       } else {
-        const available = pool.slice(0, -1).filter(c => !usedIds.has(c.id));
-        if (!available.length) continue;
-        const c1 = choose(available);
-        const a = pool.findIndex(c => c.id === c1.id);
+        const a = randInt(0, pool.length - 2);
+        const c1 = pool[a];
         const v1 = choose(ohlcValues(c1));
         openPick = { index: a, candle: c1, value: v1.value, source: v1.label };
       }
 
       if (!openPick) continue;
 
-      const tempUsed = new Set(usedIds);
-      tempUsed.add(openPick.candle.id);
-
       if (closeTarget !== null) {
-        closePick = pickCandleNear(pool, closeTarget, openPick.index + 1, pool.length - 1, tempUsed);
+        closePick = pickCandleNear(pool, closeTarget, openPick.index + 1, pool.length - 1);
       } else {
-        const availableClose = pool.slice(openPick.index + 1).filter(c => !tempUsed.has(c.id));
-        if (!availableClose.length) continue;
-        const c2 = choose(availableClose);
-        const b = pool.findIndex(c => c.id === c2.id);
+        const b = randInt(openPick.index + 1, pool.length - 1);
+        const c2 = pool[b];
         const v2 = choose(ohlcValues(c2));
         closePick = { index: b, candle: c2, value: v2.value, source: v2.label };
       }
@@ -544,9 +611,6 @@ export default function LucaTradingAuto() {
 
       if (wantPositive && profit <= 0) continue;
       if (!wantPositive && profit >= 0) continue;
-
-      usedIds.add(openPick.candle.id);
-      usedIds.add(closePick.candle.id);
 
       return {
         side,
@@ -584,17 +648,15 @@ export default function LucaTradingAuto() {
           const pool = validTimePool(day);
           if (pool.length < 5) continue;
 
-          const usedIds = new Set();
-
           for (let i = 0; i < Number(autoPositive || 0); i++) {
             const sc = scs[scenarioCursor++ % scs.length];
-            const t = buildTrade(true, pool, sc, usedIds);
+            const t = buildTrade(true, pool, sc);
             if (t) arr.push(t);
           }
 
           for (let i = 0; i < Number(autoNegative || 0); i++) {
             const sc = scs[scenarioCursor++ % scs.length];
-            const t = buildTrade(false, pool, sc, usedIds);
+            const t = buildTrade(false, pool, sc);
             if (t) arr.push(t);
           }
         }
@@ -669,7 +731,7 @@ export default function LucaTradingAuto() {
     if (!base) return alert("Carica prima il CSV.");
 
     const side = "buy";
-    const lot = 0.05;
+    const lot = 0.050;
     const entry = base.open;
     const exit = next.close;
 
@@ -702,7 +764,7 @@ export default function LucaTradingAuto() {
         <h2>1. Settaggi</h2>
         <div className="grid">
           <label>CSV TradingView/OANDA<input type="file" accept=".csv" onChange={e => e.target.files?.[0] && loadCSV(e.target.files[0])}/></label>
-          <label>Layout<select value={layout} onChange={e => setLayout(e.target.value)}><option value="mt5_light">MT5 bianco</option><option value="mt5_dark">MT5 nero</option><option value="mt4_light">MT4 bianco</option><option value="mt4_dark">MT4 nero</option><option value="white">Vecchio bianco</option><option value="compact">Vecchio compatto</option><option value="dark">Vecchio nero</option></select></label>
+          <label>Layout<select value={layout} onChange={e => setLayout(e.target.value)}><option value="ios_mt5_white">iOS MT5 bianco</option><option value="ios_mt5_dark">iOS MT5 nero</option><option value="ios_mt4_white">iOS MT4 bianco</option><option value="ios_mt4_dark">iOS MT4 nero</option><option value="android_mt4_white">Android MT4 bianco</option><option value="android_mt4_dark">Android MT4 nero</option></select></label>
           <label>Tab report<select value={tab} onChange={e => setTab(e.target.value)}><option>Day</option><option>Week</option><option>Month</option><option>Custom</option></select></label>
           <label>Valore punto 1 lotto<input type="number" value={pointValue} onChange={e => setPointValue(e.target.value)}/></label>
           <label>Deposit<input type="number" value={deposit} onChange={e => setDeposit(e.target.value)}/></label>
