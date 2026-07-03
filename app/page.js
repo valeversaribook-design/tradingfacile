@@ -28,13 +28,19 @@ function parseDate(v) {
   const raw = String(v ?? "").trim();
   if (!raw) return null;
 
-  // TradingView CSV: timestamp UNIX UTC.
+  // TradingView CSV: timestamp UNIX UTC, secondi o millisecondi.
   if (/^\d{10}$/.test(raw)) return new Date(Number(raw) * 1000);
   if (/^\d{13}$/.test(raw)) return new Date(Number(raw));
 
-  const d1 = new Date(raw.replace(" ", "T"));
+  // Formato Numbers/TradingView esportato:
+  // 2026-07-02T19:57:00+02:00
+  // 2026-07-02 19:57:00+02:00
+  // 2026-07-02T19:57:00
+  const iso = raw.replace(" ", "T");
+  const d1 = new Date(iso);
   if (!Number.isNaN(d1.getTime())) return d1;
 
+  // Formato italiano: 02/07/2026 19:57:00
   const m = raw.match(/^(\d{2})\/(\d{2})\/(\d{4})\s+(\d{2}):(\d{2})(?::(\d{2}))?/);
   if (m) {
     const d2 = new Date(`${m[3]}-${m[2]}-${m[1]}T${m[4]}:${m[5]}:${m[6] || "00"}`);
@@ -492,6 +498,10 @@ export default function LucaTradingAuto() {
   }, [candles, selectedDayKeys]);
 
   function loadCSV(file) {
+    if (file.name.toLowerCase().endsWith(".numbers")) {
+      alert("Il file .numbers non può essere letto direttamente dal browser/Vercel. Aprilo con Numbers e fai: File > Esporta in > CSV. Poi carica qui il CSV esportato. Il formato con time tipo 2026-07-02T19:57:00+02:00 è già supportato.");
+      return;
+    }
     Papa.parse(file, {
       header: true,
       skipEmptyLines: true,
@@ -500,12 +510,12 @@ export default function LucaTradingAuto() {
         if (!rows.length) return alert("CSV vuoto.");
 
         const h = {
-          time: findHeader(rows[0], ["time", "datetime", "date", "data", "timestamp", "time utc", "time (utc)"]),
-          open: findHeader(rows[0], ["open", "apertura", "otwarcie"]),
-          high: findHeader(rows[0], ["high", "massimo", "max", "najwyzszy", "najwyższy"]),
-          low: findHeader(rows[0], ["low", "minimo", "min", "najnizszy", "najniższy"]),
-          close: findHeader(rows[0], ["close", "chiusura", "zamkniecie", "zamknięcie"]),
-          volume: findHeader(rows[0], ["volume", "vol", "tick volume"])
+          time: findHeader(rows[0], ["time", "datetime", "date", "data", "timestamp", "time utc", "time (utc)", "ora", "data ora"]),
+          open: findHeader(rows[0], ["open", "apertura", "o", "otwarcie"]),
+          high: findHeader(rows[0], ["high", "massimo", "max", "h", "najwyzszy", "najwyższy"]),
+          low: findHeader(rows[0], ["low", "minimo", "min", "l", "najnizszy", "najniższy"]),
+          close: findHeader(rows[0], ["close", "chiusura", "c", "zamkniecie", "zamknięcie"]),
+          volume: findHeader(rows[0], ["volume", "vol", "tick volume", "volume ", "vol."])
         };
 
         if (!h.time || !h.open || !h.high || !h.low || !h.close) {
@@ -763,7 +773,7 @@ export default function LucaTradingAuto() {
       <section className="panel">
         <h2>1. Settaggi</h2>
         <div className="grid">
-          <label>CSV TradingView/OANDA<input type="file" accept=".csv" onChange={e => e.target.files?.[0] && loadCSV(e.target.files[0])}/></label>
+          <label>CSV TradingView/OANDA/Numbers<input type="file" accept=".csv,.txt,.tsv,.numbers" onChange={e => e.target.files?.[0] && loadCSV(e.target.files[0])}/></label>
           <label>Layout<select value={layout} onChange={e => setLayout(e.target.value)}><option value="ios_mt5_white">iOS MT5 bianco</option><option value="ios_mt5_dark">iOS MT5 nero</option><option value="ios_mt4_white">iOS MT4 bianco</option><option value="ios_mt4_dark">iOS MT4 nero</option><option value="android_mt4_white">Android MT4 bianco</option><option value="android_mt4_dark">Android MT4 nero</option></select></label>
           <label>Tab report<select value={tab} onChange={e => setTab(e.target.value)}><option>Day</option><option>Week</option><option>Month</option><option>Custom</option></select></label>
           <label>Valore punto 1 lotto<input type="number" value={pointValue} onChange={e => setPointValue(e.target.value)}/></label>
