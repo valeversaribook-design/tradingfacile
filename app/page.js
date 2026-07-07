@@ -671,7 +671,7 @@ export default function LucaTradingAuto() {
           }
         }
 
-        arr.sort((a, b) => a.openTime - b.openTime);
+        arr.sort((a, b) => a.closeTime - b.closeTime);
         const total = arr.reduce((a, t) => a + t.profit, 0);
 
         if (arr.length && total >= Number(profitMin) && total <= Number(profitMax)) {
@@ -689,7 +689,7 @@ export default function LucaTradingAuto() {
     }
 
     setAutoSets(created);
-    setTrades(created[0].trades);
+    setTrades([...created[0].trades].sort((a, b) => a.closeTime - b.closeTime));
   }
 
   function updateTrade(index, field, value) {
@@ -708,7 +708,7 @@ export default function LucaTradingAuto() {
 
       u.profit = Number(pnl(u.side, u.entry, u.exit, u.lot, Number(pointValue)).toFixed(2));
       return u;
-    }));
+    }).sort((a, b) => a.closeTime - b.closeTime));
   }
 
   async function screenshot() {
@@ -757,7 +757,7 @@ export default function LucaTradingAuto() {
       entrySource: "open",
       exitSource: "close",
       profit: Number(pnl(side, entry, exit, lot, Number(pointValue)).toFixed(2))
-    }]);
+    }].sort((a, b) => a.closeTime - b.closeTime));
   }
 
   return (
