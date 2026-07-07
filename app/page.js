@@ -150,6 +150,65 @@ function ohlcValues(c) {
   ];
 }
 
+function candleBodyRange(c) {
+  return {
+    min: Math.min(c.open, c.close),
+    max: Math.max(c.open, c.close)
+  };
+}
+
+function bodyValue(c) {
+  const r = candleBodyRange(c);
+  return Number(rand(r.min, r.max).toFixed(2));
+}
+
+function bodyDistance(c, target) {
+  const r = candleBodyRange(c);
+  if (target >= r.min && target <= r.max) return 0;
+  return Math.min(Math.abs(target - r.min), Math.abs(target - r.max));
+}
+
+function pickCandleBody(pool, target, startIndex = 0, endIndex = pool.length - 1) {
+  const from = Math.max(0, startIndex);
+  const to = Math.min(pool.length - 1, endIndex);
+  const candidates = [];
+
+  for (let i = from; i <= to; i++) {
+    const c = pool[i];
+    const r = candleBodyRange(c);
+
+    if (target === null || Number.isNaN(target)) {
+      candidates.push({
+        index: i,
+        candle: c,
+        value: bodyValue(c),
+        source: "body"
+      });
+    } else {
+      const dist = bodyDistance(c, target);
+      const value = target >= r.min && target <= r.max
+        ? Number(target.toFixed(2))
+        : Number((target < r.min ? r.min : r.max).toFixed(2));
+
+      candidates.push({
+        index: i,
+        candle: c,
+        value,
+        source: "body",
+        distance: dist
+      });
+    }
+  }
+
+  if (!candidates.length) return null;
+
+  if (target === null || Number.isNaN(target)) return choose(candidates);
+
+  candidates.sort((a, b) => a.distance - b.distance);
+  const top = candidates.slice(0, Math.min(25, candidates.length));
+  return choose(top);
+}
+
 function nearestOHLC(c, target) {
   const values = ohlcValues(c);
   if (target === null || Number.isNaN(target)) return choose(values);
@@ -576,34 +635,19 @@ export default function LucaTradingAuto() {
     const openTarget = sc?.open !== null && !Number.isNaN(sc?.open) ? sc.open : null;
     const closeTarget = sc?.close !== null && !Number.isNaN(sc?.close) ? sc.close : null;
 
-    for (let tries = 0; tries < 900; tries++) {
+    for (let tries = 0; tries < 1200; tries++) {
       let openPick;
       let closePick;
 
-      // Regola fondamentale:
-      // i prezzi generati sono SEMPRE valori reali presi dal CSV: open/high/low/close della candela.
-      // Se compili uno scenario, quel valore viene usato solo come riferimento:
-      // l'app prende il valore OHLC reale più vicino nel CSV.
-      if (openTarget !== null) {
-        openPick = pickCandleNear(pool, openTarget, 0, pool.length - 2);
-      } else {
-        const a = randInt(0, pool.length - 2);
-        const c1 = pool[a];
-        const v1 = choose(ohlcValues(c1));
-        openPick = { index: a, candle: c1, value: v1.value, source: v1.label };
-      }
-
+      // REGOLA CORRETTA:
+      // Il prezzo deve stare DENTRO il corpo della candela, cioè tra OPEN e CLOSE.
+      // Non usa più HIGH/LOW per apertura e chiusura dell'operazione.
+      // Se inserisci uno scenario, lo usa come riferimento e cerca una candela
+      // in cui quel prezzo è dentro il corpo; altrimenti prende il valore più vicino dentro il corpo.
+      openPick = pickCandleBody(pool, openTarget, 0, pool.length - 2);
       if (!openPick) continue;
 
-      if (closeTarget !== null) {
-        closePick = pickCandleNear(pool, closeTarget, openPick.index + 1, pool.length - 1);
-      } else {
-        const b = randInt(openPick.index + 1, pool.length - 1);
-        const c2 = pool[b];
-        const v2 = choose(ohlcValues(c2));
-        closePick = { index: b, candle: c2, value: v2.value, source: v2.label };
-      }
-
+      closePick = pickCandleBody(pool, closeTarget, openPick.index + 1, pool.length - 1);
       if (!closePick) continue;
 
       const entry = Number(openPick.value);
@@ -631,8 +675,8 @@ export default function LucaTradingAuto() {
         closeTime: withRandomSecond(closePick.candle.time),
         entry: Number(entry.toFixed(2)),
         exit: Number(exit.toFixed(2)),
-        entrySource: openPick.source,
-        exitSource: closePick.source,
+        entrySource: "body open-close",
+        exitSource: "body open-close",
         profit
       };
     }
@@ -671,7 +715,7 @@ export default function LucaTradingAuto() {
           }
         }
 
-        arr.sort((a, b) => a.closeTime - b.closeTime);
+        arr.sort((a, b) => a.openTime - b.openTime);
         const total = arr.reduce((a, t) => a + t.profit, 0);
 
         if (arr.length && total >= Number(profitMin) && total <= Number(profitMax)) {
@@ -689,7 +733,7 @@ export default function LucaTradingAuto() {
     }
 
     setAutoSets(created);
-    setTrades([...created[0].trades].sort((a, b) => a.closeTime - b.closeTime));
+    setTrades(created[0].trades);
   }
 
   function updateTrade(index, field, value) {
@@ -708,7 +752,7 @@ export default function LucaTradingAuto() {
 
       u.profit = Number(pnl(u.side, u.entry, u.exit, u.lot, Number(pointValue)).toFixed(2));
       return u;
-    }).sort((a, b) => a.closeTime - b.closeTime));
+    }));
   }
 
   async function screenshot() {
@@ -757,7 +801,7 @@ export default function LucaTradingAuto() {
       entrySource: "open",
       exitSource: "close",
       profit: Number(pnl(side, entry, exit, lot, Number(pointValue)).toFixed(2))
-    }].sort((a, b) => a.closeTime - b.closeTime));
+    }]);
   }
 
   return (
@@ -802,7 +846,7 @@ export default function LucaTradingAuto() {
         </div>
 
         <h3>3 scenari opzionali</h3>
-        <p className="hint">Lascia vuoto ciò che vuoi automatico. Se scrivi un prezzo, l’app prende dal CSV il valore reale OHLC più vicino: open, high, low o close.</p>
+        <p className="hint">Lascia vuoto ciò che vuoi automatico. Se scrivi un prezzo, l’app cerca una candela dove quel prezzo sta tra OPEN e CLOSE. Se non c’è, prende il valore più vicino dentro il corpo candela.</p>
         <div className="scenario-grid">
           <b>Scenario</b><b>Tipo</b><b>Apertura</b><b>Chiusura</b>
           <span>1</span><select value={scenario1Side} onChange={e => setScenario1Side(e.target.value)}><option value="auto">Automatico</option><option value="buy">BUY</option><option value="sell">SELL</option></select><input type="number" step="0.01" value={scenario1Open} onChange={e => setScenario1Open(e.target.value)} placeholder="automatico"/><input type="number" step="0.01" value={scenario1Close} onChange={e => setScenario1Close(e.target.value)} placeholder="automatico"/>
@@ -852,10 +896,10 @@ export default function LucaTradingAuto() {
                 <td><input className="table-input small" type="number" step="0.01" value={t.lot} onChange={e => updateTrade(i, "lot", e.target.value)}/></td>
                 <td><input className="table-input date" type="date" value={htmlDate(t.openTime)} onChange={e => updateTrade(i, "openDate", e.target.value)}/></td>
                 <td><input className="table-input time" value={htmlTime(t.openTime)} onChange={e => updateTrade(i, "openTime", e.target.value)}/></td>
-                <td><input className="table-input price" type="number" step="0.01" value={t.entry} onChange={e => updateTrade(i, "entry", e.target.value)}/>{t.entrySource && <small className="source">CSV {t.entrySource}</small>}</td>
+                <td><input className="table-input price" type="number" step="0.01" value={t.entry} onChange={e => updateTrade(i, "entry", e.target.value)}/>{t.entrySource && <small className="source">{t.entrySource}</small>}</td>
                 <td><input className="table-input date" type="date" value={htmlDate(t.closeTime)} onChange={e => updateTrade(i, "closeDate", e.target.value)}/></td>
                 <td><input className="table-input time" value={htmlTime(t.closeTime)} onChange={e => updateTrade(i, "closeTime", e.target.value)}/></td>
-                <td><input className="table-input price" type="number" step="0.01" value={t.exit} onChange={e => updateTrade(i, "exit", e.target.value)}/>{t.exitSource && <small className="source">CSV {t.exitSource}</small>}</td>
+                <td><input className="table-input price" type="number" step="0.01" value={t.exit} onChange={e => updateTrade(i, "exit", e.target.value)}/>{t.exitSource && <small className="source">{t.exitSource}</small>}</td>
                 <td className={Number(t.profit) >= 0 ? "pos" : "neg"}>{money(t.profit)}</td>
                 <td><button onClick={() => setTrades(trades.filter((_, x) => x !== i))}>×</button></td>
               </tr>
