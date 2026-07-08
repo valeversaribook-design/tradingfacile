@@ -157,55 +157,72 @@ function candleBodyRange(c) {
   };
 }
 
-function bodyValue(c) {
+function intermediateBodyValue(c, target = null) {
   const r = candleBodyRange(c);
-  return Number(rand(r.min, r.max).toFixed(2));
+  const size = r.max - r.min;
+
+  if (size <= 0.04) return null;
+
+  // Margine interno: evita sempre open/close e non usa mai high/low.
+  const margin = Math.max(0.02, size * 0.12);
+  const min = r.min + margin;
+  const max = r.max - margin;
+
+  if (min >= max) return null;
+
+  if (target !== null && !Number.isNaN(target)) {
+    const clamped = Math.min(Math.max(target, min), max);
+    const jitter = Math.max(0.01, size * 0.03);
+    const v = Math.min(Math.max(clamped + rand(-jitter, jitter), min), max);
+    return Number(v.toFixed(2));
+  }
+
+  return Number(rand(min, max).toFixed(2));
 }
 
 function bodyDistance(c, target) {
   const r = candleBodyRange(c);
-  if (target >= r.min && target <= r.max) return 0;
-  return Math.min(Math.abs(target - r.min), Math.abs(target - r.max));
+  const size = r.max - r.min;
+  if (size <= 0.04) return Infinity;
+
+  const margin = Math.max(0.02, size * 0.12);
+  const min = r.min + margin;
+  const max = r.max - margin;
+  if (min >= max) return Infinity;
+
+  if (target >= min && target <= max) return 0;
+  return Math.min(Math.abs(target - min), Math.abs(target - max));
 }
 
-function pickCandleBody(pool, target, startIndex = 0, endIndex = pool.length - 1) {
+function pickIntermediateBodyCandle(pool, target, startIndex = 0, endIndex = pool.length - 1, usedIds = new Set()) {
   const from = Math.max(0, startIndex);
   const to = Math.min(pool.length - 1, endIndex);
   const candidates = [];
 
   for (let i = from; i <= to; i++) {
     const c = pool[i];
-    const r = candleBodyRange(c);
+    if (usedIds.has(c.id)) continue;
 
-    if (target === null || Number.isNaN(target)) {
-      candidates.push({
-        index: i,
-        candle: c,
-        value: bodyValue(c),
-        source: "body"
-      });
-    } else {
-      const dist = bodyDistance(c, target);
-      const value = target >= r.min && target <= r.max
-        ? Number(target.toFixed(2))
-        : Number((target < r.min ? r.min : r.max).toFixed(2));
+    const value = intermediateBodyValue(c, target);
+    if (value === null) continue;
 
-      candidates.push({
-        index: i,
-        candle: c,
-        value,
-        source: "body",
-        distance: dist
-      });
-    }
+    const distance = target === null || Number.isNaN(target)
+      ? Math.random()
+      : bodyDistance(c, target);
+
+    candidates.push({
+      index: i,
+      candle: c,
+      value,
+      source: "intermedio",
+      distance
+    });
   }
 
   if (!candidates.length) return null;
 
-  if (target === null || Number.isNaN(target)) return choose(candidates);
-
   candidates.sort((a, b) => a.distance - b.distance);
-  const top = candidates.slice(0, Math.min(25, candidates.length));
+  const top = candidates.slice(0, Math.min(30, candidates.length));
   return choose(top);
 }
 
@@ -631,23 +648,21 @@ export default function LucaTradingAuto() {
     });
   }
 
-  function buildTrade(wantPositive, pool, sc) {
+  function buildTrade(wantPositive, pool, sc, usedIds = new Set()) {
     const openTarget = sc?.open !== null && !Number.isNaN(sc?.open) ? sc.open : null;
     const closeTarget = sc?.close !== null && !Number.isNaN(sc?.close) ? sc.close : null;
 
-    for (let tries = 0; tries < 1200; tries++) {
-      let openPick;
-      let closePick;
-
-      // REGOLA CORRETTA:
-      // Il prezzo deve stare DENTRO il corpo della candela, cioè tra OPEN e CLOSE.
-      // Non usa più HIGH/LOW per apertura e chiusura dell'operazione.
-      // Se inserisci uno scenario, lo usa come riferimento e cerca una candela
-      // in cui quel prezzo è dentro il corpo; altrimenti prende il valore più vicino dentro il corpo.
-      openPick = pickCandleBody(pool, openTarget, 0, pool.length - 2);
+    for (let tries = 0; tries < 1500; tries++) {
+      // REGOLA DEFINITIVA:
+      // Prezzo sempre intermedio dentro il corpo candela.
+      // Mai open, mai close, mai high, mai low.
+      const openPick = pickIntermediateBodyCandle(pool, openTarget, 0, pool.length - 2, usedIds);
       if (!openPick) continue;
 
-      closePick = pickCandleBody(pool, closeTarget, openPick.index + 1, pool.length - 1);
+      const tempUsed = new Set(usedIds);
+      tempUsed.add(openPick.candle.id);
+
+      const closePick = pickIntermediateBodyCandle(pool, closeTarget, openPick.index + 1, pool.length - 1, tempUsed);
       if (!closePick) continue;
 
       const entry = Number(openPick.value);
@@ -666,6 +681,9 @@ export default function LucaTradingAuto() {
       if (wantPositive && profit <= 0) continue;
       if (!wantPositive && profit >= 0) continue;
 
+      usedIds.add(openPick.candle.id);
+      usedIds.add(closePick.candle.id);
+
       return {
         side,
         lot,
@@ -675,8 +693,8 @@ export default function LucaTradingAuto() {
         closeTime: withRandomSecond(closePick.candle.time),
         entry: Number(entry.toFixed(2)),
         exit: Number(exit.toFixed(2)),
-        entrySource: "body open-close",
-        exitSource: "body open-close",
+        entrySource: "intermedio",
+        exitSource: "intermedio",
         profit
       };
     }
@@ -702,20 +720,22 @@ export default function LucaTradingAuto() {
           const pool = validTimePool(day);
           if (pool.length < 5) continue;
 
+          const usedIds = new Set();
+
           for (let i = 0; i < Number(autoPositive || 0); i++) {
             const sc = scs[scenarioCursor++ % scs.length];
-            const t = buildTrade(true, pool, sc);
+            const t = buildTrade(true, pool, sc, usedIds);
             if (t) arr.push(t);
           }
 
           for (let i = 0; i < Number(autoNegative || 0); i++) {
             const sc = scs[scenarioCursor++ % scs.length];
-            const t = buildTrade(false, pool, sc);
+            const t = buildTrade(false, pool, sc, usedIds);
             if (t) arr.push(t);
           }
         }
 
-        arr.sort((a, b) => a.openTime - b.openTime);
+        arr.sort((a, b) => a.closeTime - b.closeTime);
         const total = arr.reduce((a, t) => a + t.profit, 0);
 
         if (arr.length && total >= Number(profitMin) && total <= Number(profitMax)) {
@@ -733,7 +753,7 @@ export default function LucaTradingAuto() {
     }
 
     setAutoSets(created);
-    setTrades(created[0].trades);
+    setTrades([...created[0].trades].sort((a, b) => a.closeTime - b.closeTime));
   }
 
   function updateTrade(index, field, value) {
@@ -846,7 +866,7 @@ export default function LucaTradingAuto() {
         </div>
 
         <h3>3 scenari opzionali</h3>
-        <p className="hint">Lascia vuoto ciò che vuoi automatico. Se scrivi un prezzo, l’app cerca una candela dove quel prezzo sta tra OPEN e CLOSE. Se non c’è, prende il valore più vicino dentro il corpo candela.</p>
+        <p className="hint">Lascia vuoto ciò che vuoi automatico. Se scrivi un prezzo, l’app cerca un valore intermedio dentro il corpo candela. Non usa mai open, close, high o low.</p>
         <div className="scenario-grid">
           <b>Scenario</b><b>Tipo</b><b>Apertura</b><b>Chiusura</b>
           <span>1</span><select value={scenario1Side} onChange={e => setScenario1Side(e.target.value)}><option value="auto">Automatico</option><option value="buy">BUY</option><option value="sell">SELL</option></select><input type="number" step="0.01" value={scenario1Open} onChange={e => setScenario1Open(e.target.value)} placeholder="automatico"/><input type="number" step="0.01" value={scenario1Close} onChange={e => setScenario1Close(e.target.value)} placeholder="automatico"/>
