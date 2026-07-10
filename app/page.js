@@ -150,82 +150,6 @@ function ohlcValues(c) {
   ];
 }
 
-function candleBodyRange(c) {
-  return {
-    min: Math.min(c.open, c.close),
-    max: Math.max(c.open, c.close)
-  };
-}
-
-function intermediateBodyValue(c, target = null) {
-  const r = candleBodyRange(c);
-  const size = r.max - r.min;
-
-  if (size <= 0.04) return null;
-
-  // Margine interno: evita sempre open/close e non usa mai high/low.
-  const margin = Math.max(0.02, size * 0.12);
-  const min = r.min + margin;
-  const max = r.max - margin;
-
-  if (min >= max) return null;
-
-  if (target !== null && !Number.isNaN(target)) {
-    const clamped = Math.min(Math.max(target, min), max);
-    const jitter = Math.max(0.01, size * 0.03);
-    const v = Math.min(Math.max(clamped + rand(-jitter, jitter), min), max);
-    return Number(v.toFixed(2));
-  }
-
-  return Number(rand(min, max).toFixed(2));
-}
-
-function bodyDistance(c, target) {
-  const r = candleBodyRange(c);
-  const size = r.max - r.min;
-  if (size <= 0.04) return Infinity;
-
-  const margin = Math.max(0.02, size * 0.12);
-  const min = r.min + margin;
-  const max = r.max - margin;
-  if (min >= max) return Infinity;
-
-  if (target >= min && target <= max) return 0;
-  return Math.min(Math.abs(target - min), Math.abs(target - max));
-}
-
-function pickIntermediateBodyCandle(pool, target, startIndex = 0, endIndex = pool.length - 1, usedIds = new Set()) {
-  const from = Math.max(0, startIndex);
-  const to = Math.min(pool.length - 1, endIndex);
-  const candidates = [];
-
-  for (let i = from; i <= to; i++) {
-    const c = pool[i];
-    if (usedIds.has(c.id)) continue;
-
-    const value = intermediateBodyValue(c, target);
-    if (value === null) continue;
-
-    const distance = target === null || Number.isNaN(target)
-      ? Math.random()
-      : bodyDistance(c, target);
-
-    candidates.push({
-      index: i,
-      candle: c,
-      value,
-      source: "intermedio",
-      distance
-    });
-  }
-
-  if (!candidates.length) return null;
-
-  candidates.sort((a, b) => a.distance - b.distance);
-  const top = candidates.slice(0, Math.min(30, candidates.length));
-  return choose(top);
-}
-
 function nearestOHLC(c, target) {
   const values = ohlcValues(c);
   if (target === null || Number.isNaN(target)) return choose(values);
@@ -397,8 +321,17 @@ function renderReportBlob(trades, layout, tab, deposit, credit, withdrawal) {
   }
 
   function drawRows(startY) {
-    const rows = trades.slice(0, isAndroid && isDark ? 9 : 8);
-    const rowH = isAndroid && isDark ? 116 : (isMT4 ? 132 : 88);
+    const availableBottom = isAndroid && isDark ? 1460 : 1620;
+    const totalRows = trades.length;
+    const baseRowH = isAndroid && isDark ? 116 : (isMT4 ? 132 : 88);
+    const minRowH = isAndroid && isDark ? 82 : (isMT4 ? 92 : 70);
+    const fitRowH = totalRows > 0
+      ? Math.floor((availableBottom - startY) / totalRows)
+      : baseRowH;
+
+    const rowH = Math.max(minRowH, Math.min(baseRowH, fitRowH));
+    const maxRows = Math.max(1, Math.floor((availableBottom - startY) / rowH));
+    const rows = trades.slice(0, maxRows);
 
     rows.forEach((t, i) => {
       const y = startY + i * rowH;
@@ -409,31 +342,55 @@ function renderReportBlob(trades, layout, tab, deposit, credit, withdrawal) {
       const sym = isMT5 ? "XAUUSD-STD" : "XAUUSD";
       const sideColor = t.side === "buy" ? blue : red;
       const profitColor = Number(t.profit) >= 0 ? blue : red;
+      const scale = Math.min(1, rowH / baseRowH);
 
       if (isAndroid && isDark) {
-        drawText(`${sym}, `, 14, y + 38, 28, "700", "#d7d7d7");
+        const titleY = y + Math.max(29, 38 * scale);
+        const priceY = y + Math.max(62, 86 * scale);
+        drawText(`${sym}, `, 14, titleY, Math.max(22, 28 * scale), "700", "#d7d7d7");
         const sw = ctx.measureText(`${sym}, `).width;
-        drawText(`${t.side} ${Number(t.lot).toFixed(2)}`, 14 + sw, y + 38, 28, "700", sideColor);
-        drawText(`${price(t.entry)} → ${price(t.exit)}`, 14, y + 86, 30, "400", "#d7d7d7");
-        drawText(reportDate(t.closeTime), 810, y + 36, 27, "700", "#d0d0d0", "right");
-        drawText(money(t.profit), 810, y + 88, 30, "700", profitColor, "right");
+        drawText(`${t.side} ${Number(t.lot).toFixed(2)}`, 14 + sw, titleY, Math.max(22, 28 * scale), "700", sideColor);
+        drawText(`${price(t.entry)} → ${price(t.exit)}`, 14, priceY, Math.max(23, 30 * scale), "400", "#d7d7d7");
+        drawText(reportDate(t.closeTime), 810, titleY, Math.max(20, 27 * scale), "700", "#d0d0d0", "right");
+        drawText(money(t.profit), 810, priceY, Math.max(23, 30 * scale), "700", profitColor, "right");
         return;
       }
 
-      drawText(`${sym}, `, 20, y + (isMT4 ? 48 : 34), isMT4 ? 31 : 30, "900", text);
+      const titleY = y + Math.max(28, (isMT4 ? 48 : 34) * scale);
+      const priceY = y + Math.max(58, (isMT4 ? 100 : 67) * scale);
+      const titleSize = Math.max(23, (isMT4 ? 31 : 30) * scale);
+      const priceSize = Math.max(24, (isMT4 ? 33 : 30) * scale);
+      const dateSize = Math.max(19, (isMT4 ? 26 : 22) * scale);
+      const profitSize = Math.max(24, (isMT4 ? 32 : 28) * scale);
+
+      drawText(`${sym}, `, 20, titleY, titleSize, "900", text);
       const sw = ctx.measureText(`${sym}, `).width;
-      drawText(`${t.side} ${Number(t.lot).toFixed(2)}`, 20 + sw, y + (isMT4 ? 48 : 34), isMT4 ? 31 : 30, "900", sideColor);
-      drawText(`${price(t.entry)} → ${price(t.exit)}`, 20, y + (isMT4 ? 100 : 67), isMT4 ? 33 : 30, "400", muted);
-      drawText(reportDate(t.closeTime), 810, y + (isMT4 ? 44 : 34), isMT4 ? 26 : 22, "700", muted, "right");
-      drawText(money(t.profit), 810, y + (isMT4 ? 100 : 67), isMT4 ? 32 : 28, "900", profitColor, "right");
+      drawText(`${t.side} ${Number(t.lot).toFixed(2)}`, 20 + sw, titleY, titleSize, "900", sideColor);
+      drawText(`${price(t.entry)} → ${price(t.exit)}`, 20, priceY, priceSize, "400", muted);
+      drawText(reportDate(t.closeTime), 810, titleY, dateSize, "700", muted, "right");
+      drawText(money(t.profit), 810, priceY, profitSize, "900", profitColor, "right");
     });
-    return startY + rows.length * rowH;
+
+    return {
+      endY: startY + rows.length * rowH,
+      shownRows: rows.length,
+      totalRows
+    };
   }
 
-  function drawSummary(y) {
-    if (isAndroid && isDark) return;
+  function drawSummary(rowsInfo) {
+    if (isAndroid && isDark) return false;
+
+    const { endY, shownRows, totalRows } = rowsInfo;
+    const summaryHeight = 250;
+    const summaryBottomLimit = 1620;
+
+    if (shownRows < totalRows || endY + summaryHeight > summaryBottomLimit) {
+      return false;
+    }
+
     const minY = isMT5 ? 1390 : 1030;
-    const sy = Math.max(y + 16, minY);
+    const sy = Math.max(endY + 16, minY);
     lineY(sy - 20);
 
     [["Profit:", totalProfit], ["Credit:", Number(credit || 0)], ["Deposit:", Number(deposit || 0)], ["Withdrawal:", Number(withdrawal || 0)], ["Balance:", balance]].forEach((r, i) => {
@@ -441,6 +398,8 @@ function renderReportBlob(trades, layout, tab, deposit, credit, withdrawal) {
       drawText(r[0], 20, yy, 32, "900", muted);
       drawText(money(r[1]), 810, yy, 32, "900", muted, "right");
     });
+
+    return true;
   }
 
   function drawBottomNav() {
@@ -503,8 +462,8 @@ function renderReportBlob(trades, layout, tab, deposit, credit, withdrawal) {
     startY = isDark ? 240 : (isMT4 ? 208 : 195);
   }
 
-  const afterRows = drawRows(startY);
-  drawSummary(afterRows);
+  const rowsInfo = drawRows(startY);
+  drawSummary(rowsInfo);
   drawBottomNav();
 
   return new Promise(resolve => canvas.toBlob(resolve, "image/png"));
@@ -648,21 +607,38 @@ export default function LucaTradingAuto() {
     });
   }
 
-  function buildTrade(wantPositive, pool, sc, usedIds = new Set()) {
+  function buildTrade(wantPositive, pool, sc) {
     const openTarget = sc?.open !== null && !Number.isNaN(sc?.open) ? sc.open : null;
     const closeTarget = sc?.close !== null && !Number.isNaN(sc?.close) ? sc.close : null;
 
-    for (let tries = 0; tries < 1500; tries++) {
-      // REGOLA DEFINITIVA:
-      // Prezzo sempre intermedio dentro il corpo candela.
-      // Mai open, mai close, mai high, mai low.
-      const openPick = pickIntermediateBodyCandle(pool, openTarget, 0, pool.length - 2, usedIds);
+    for (let tries = 0; tries < 900; tries++) {
+      let openPick;
+      let closePick;
+
+      // Regola fondamentale:
+      // i prezzi generati sono SEMPRE valori reali presi dal CSV: open/high/low/close della candela.
+      // Se compili uno scenario, quel valore viene usato solo come riferimento:
+      // l'app prende il valore OHLC reale più vicino nel CSV.
+      if (openTarget !== null) {
+        openPick = pickCandleNear(pool, openTarget, 0, pool.length - 2);
+      } else {
+        const a = randInt(0, pool.length - 2);
+        const c1 = pool[a];
+        const v1 = choose(ohlcValues(c1));
+        openPick = { index: a, candle: c1, value: v1.value, source: v1.label };
+      }
+
       if (!openPick) continue;
 
-      const tempUsed = new Set(usedIds);
-      tempUsed.add(openPick.candle.id);
+      if (closeTarget !== null) {
+        closePick = pickCandleNear(pool, closeTarget, openPick.index + 1, pool.length - 1);
+      } else {
+        const b = randInt(openPick.index + 1, pool.length - 1);
+        const c2 = pool[b];
+        const v2 = choose(ohlcValues(c2));
+        closePick = { index: b, candle: c2, value: v2.value, source: v2.label };
+      }
 
-      const closePick = pickIntermediateBodyCandle(pool, closeTarget, openPick.index + 1, pool.length - 1, tempUsed);
       if (!closePick) continue;
 
       const entry = Number(openPick.value);
@@ -681,9 +657,6 @@ export default function LucaTradingAuto() {
       if (wantPositive && profit <= 0) continue;
       if (!wantPositive && profit >= 0) continue;
 
-      usedIds.add(openPick.candle.id);
-      usedIds.add(closePick.candle.id);
-
       return {
         side,
         lot,
@@ -693,8 +666,8 @@ export default function LucaTradingAuto() {
         closeTime: withRandomSecond(closePick.candle.time),
         entry: Number(entry.toFixed(2)),
         exit: Number(exit.toFixed(2)),
-        entrySource: "intermedio",
-        exitSource: "intermedio",
+        entrySource: openPick.source,
+        exitSource: closePick.source,
         profit
       };
     }
@@ -720,22 +693,20 @@ export default function LucaTradingAuto() {
           const pool = validTimePool(day);
           if (pool.length < 5) continue;
 
-          const usedIds = new Set();
-
           for (let i = 0; i < Number(autoPositive || 0); i++) {
             const sc = scs[scenarioCursor++ % scs.length];
-            const t = buildTrade(true, pool, sc, usedIds);
+            const t = buildTrade(true, pool, sc);
             if (t) arr.push(t);
           }
 
           for (let i = 0; i < Number(autoNegative || 0); i++) {
             const sc = scs[scenarioCursor++ % scs.length];
-            const t = buildTrade(false, pool, sc, usedIds);
+            const t = buildTrade(false, pool, sc);
             if (t) arr.push(t);
           }
         }
 
-        arr.sort((a, b) => a.closeTime - b.closeTime);
+        arr.sort((a, b) => a.openTime - b.openTime);
         const total = arr.reduce((a, t) => a + t.profit, 0);
 
         if (arr.length && total >= Number(profitMin) && total <= Number(profitMax)) {
@@ -753,7 +724,7 @@ export default function LucaTradingAuto() {
     }
 
     setAutoSets(created);
-    setTrades([...created[0].trades].sort((a, b) => a.closeTime - b.closeTime));
+    setTrades(created[0].trades);
   }
 
   function updateTrade(index, field, value) {
@@ -777,7 +748,8 @@ export default function LucaTradingAuto() {
 
   async function screenshot() {
     if (!trades.length) return alert("Prima genera o aggiungi almeno una operazione.");
-    const blob = await renderReportBlob(trades, layout, tab, deposit, credit, withdrawal);
+    const orderedTrades = [...trades].sort((a, b) => a.closeTime - b.closeTime);
+    const blob = await renderReportBlob(orderedTrades, layout, tab, deposit, credit, withdrawal);
     downloadBlob(blob, "luca_trading_report.png");
   }
 
@@ -866,7 +838,7 @@ export default function LucaTradingAuto() {
         </div>
 
         <h3>3 scenari opzionali</h3>
-        <p className="hint">Lascia vuoto ciò che vuoi automatico. Se scrivi un prezzo, l’app cerca un valore intermedio dentro il corpo candela. Non usa mai open, close, high o low.</p>
+        <p className="hint">Lascia vuoto ciò che vuoi automatico. Se scrivi un prezzo, l’app prende dal CSV il valore reale OHLC più vicino: open, high, low o close.</p>
         <div className="scenario-grid">
           <b>Scenario</b><b>Tipo</b><b>Apertura</b><b>Chiusura</b>
           <span>1</span><select value={scenario1Side} onChange={e => setScenario1Side(e.target.value)}><option value="auto">Automatico</option><option value="buy">BUY</option><option value="sell">SELL</option></select><input type="number" step="0.01" value={scenario1Open} onChange={e => setScenario1Open(e.target.value)} placeholder="automatico"/><input type="number" step="0.01" value={scenario1Close} onChange={e => setScenario1Close(e.target.value)} placeholder="automatico"/>
@@ -916,10 +888,10 @@ export default function LucaTradingAuto() {
                 <td><input className="table-input small" type="number" step="0.01" value={t.lot} onChange={e => updateTrade(i, "lot", e.target.value)}/></td>
                 <td><input className="table-input date" type="date" value={htmlDate(t.openTime)} onChange={e => updateTrade(i, "openDate", e.target.value)}/></td>
                 <td><input className="table-input time" value={htmlTime(t.openTime)} onChange={e => updateTrade(i, "openTime", e.target.value)}/></td>
-                <td><input className="table-input price" type="number" step="0.01" value={t.entry} onChange={e => updateTrade(i, "entry", e.target.value)}/>{t.entrySource && <small className="source">{t.entrySource}</small>}</td>
+                <td><input className="table-input price" type="number" step="0.01" value={t.entry} onChange={e => updateTrade(i, "entry", e.target.value)}/>{t.entrySource && <small className="source">CSV {t.entrySource}</small>}</td>
                 <td><input className="table-input date" type="date" value={htmlDate(t.closeTime)} onChange={e => updateTrade(i, "closeDate", e.target.value)}/></td>
                 <td><input className="table-input time" value={htmlTime(t.closeTime)} onChange={e => updateTrade(i, "closeTime", e.target.value)}/></td>
-                <td><input className="table-input price" type="number" step="0.01" value={t.exit} onChange={e => updateTrade(i, "exit", e.target.value)}/>{t.exitSource && <small className="source">{t.exitSource}</small>}</td>
+                <td><input className="table-input price" type="number" step="0.01" value={t.exit} onChange={e => updateTrade(i, "exit", e.target.value)}/>{t.exitSource && <small className="source">CSV {t.exitSource}</small>}</td>
                 <td className={Number(t.profit) >= 0 ? "pos" : "neg"}>{money(t.profit)}</td>
                 <td><button onClick={() => setTrades(trades.filter((_, x) => x !== i))}>×</button></td>
               </tr>
