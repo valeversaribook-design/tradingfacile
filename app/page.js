@@ -706,7 +706,7 @@ export default function LucaTradingAuto() {
           }
         }
 
-        arr.sort((a, b) => a.openTime - b.openTime);
+        arr.sort((a, b) => new Date(a.closeTime).getTime() - new Date(b.closeTime).getTime());
         const total = arr.reduce((a, t) => a + t.profit, 0);
 
         if (arr.length && total >= Number(profitMin) && total <= Number(profitMax)) {
@@ -724,7 +724,24 @@ export default function LucaTradingAuto() {
     }
 
     setAutoSets(created);
-    setTrades(created[0].trades);
+    setTrades([...created[0].trades].sort((a, b) => new Date(a.closeTime).getTime() - new Date(b.closeTime).getTime()));
+  }
+
+  function sortByCloseTime() {
+    setTrades(prev => [...prev].sort(
+      (a, b) => new Date(a.closeTime).getTime() - new Date(b.closeTime).getTime()
+    ));
+  }
+
+  function moveTrade(index, direction) {
+    setTrades(prev => {
+      const target = index + direction;
+      if (target < 0 || target >= prev.length) return prev;
+
+      const next = [...prev];
+      [next[index], next[target]] = [next[target], next[index]];
+      return next;
+    });
   }
 
   function updateTrade(index, field, value) {
@@ -743,13 +760,12 @@ export default function LucaTradingAuto() {
 
       u.profit = Number(pnl(u.side, u.entry, u.exit, u.lot, Number(pointValue)).toFixed(2));
       return u;
-    }));
+    }).sort((a, b) => new Date(a.closeTime).getTime() - new Date(b.closeTime).getTime()));
   }
 
   async function screenshot() {
     if (!trades.length) return alert("Prima genera o aggiungi almeno una operazione.");
-    const orderedTrades = [...trades].sort((a, b) => a.closeTime - b.closeTime);
-    const blob = await renderReportBlob(orderedTrades, layout, tab, deposit, credit, withdrawal);
+    const blob = await renderReportBlob(trades, layout, tab, deposit, credit, withdrawal);
     downloadBlob(blob, "luca_trading_report.png");
   }
 
@@ -759,9 +775,12 @@ export default function LucaTradingAuto() {
     const rows = ["screen,side,lot,open_time,entry,close_time,exit,profit"];
 
     for (const set of autoSets) {
-      const blob = await renderReportBlob(set.trades, layout, tab, deposit, credit, withdrawal);
+      const orderedSet = [...set.trades].sort(
+        (a, b) => new Date(a.closeTime).getTime() - new Date(b.closeTime).getTime()
+      );
+      const blob = await renderReportBlob(orderedSet, layout, tab, deposit, credit, withdrawal);
       zip.file(`${set.name}.png`, blob);
-      set.trades.forEach(t => {
+      orderedSet.forEach(t => {
         rows.push(`${set.name},${t.side},${Number(t.lot).toFixed(2)},${itDate(t.openTime)},${price(t.entry)},${itDate(t.closeTime)},${price(t.exit)},${Number(t.profit).toFixed(2)}`);
       });
     }
@@ -793,7 +812,7 @@ export default function LucaTradingAuto() {
       entrySource: "open",
       exitSource: "close",
       profit: Number(pnl(side, entry, exit, lot, Number(pointValue)).toFixed(2))
-    }]);
+    }].sort((a, b) => new Date(a.closeTime).getTime() - new Date(b.closeTime).getTime()));
   }
 
   return (
@@ -863,6 +882,9 @@ export default function LucaTradingAuto() {
       <section className="panel">
         <h2>2. Operazioni modificabili</h2>
         <p className="hint">Puoi cambiare tutto: tipo, lotto, date, orari, apertura e chiusura. Il P/L si aggiorna subito.</p>
+        <div className="actions">
+          <button onClick={sortByCloseTime}>Ordina per data e ora di chiusura</button>
+        </div>
 
         <table>
           <thead>
@@ -877,6 +899,7 @@ export default function LucaTradingAuto() {
               <th>Ora chiusura</th>
               <th>Prezzo chiusura</th>
               <th>P/L</th>
+              <th>Sposta</th>
               <th></th>
             </tr>
           </thead>
@@ -893,6 +916,22 @@ export default function LucaTradingAuto() {
                 <td><input className="table-input time" value={htmlTime(t.closeTime)} onChange={e => updateTrade(i, "closeTime", e.target.value)}/></td>
                 <td><input className="table-input price" type="number" step="0.01" value={t.exit} onChange={e => updateTrade(i, "exit", e.target.value)}/>{t.exitSource && <small className="source">CSV {t.exitSource}</small>}</td>
                 <td className={Number(t.profit) >= 0 ? "pos" : "neg"}>{money(t.profit)}</td>
+                <td>
+                  <div style={{display:"flex", gap:"6px"}}>
+                    <button
+                      type="button"
+                      title="Sposta sopra"
+                      disabled={i === 0}
+                      onClick={() => moveTrade(i, -1)}
+                    >↑</button>
+                    <button
+                      type="button"
+                      title="Sposta sotto"
+                      disabled={i === trades.length - 1}
+                      onClick={() => moveTrade(i, 1)}
+                    >↓</button>
+                  </div>
+                </td>
                 <td><button onClick={() => setTrades(trades.filter((_, x) => x !== i))}>×</button></td>
               </tr>
             )}
