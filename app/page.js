@@ -273,15 +273,9 @@ function renderReportBlob(trades, layout, tab, deposit, credit, withdrawal) {
     ctx.strokeStyle = isDark ? "#3c3c3c" : "#d9d9d9";
     roundRect(ctx, x, y, w, h, r, true, true);
 
-    ["Giorno", "Settimana", "Mese", "Personalizzato"].forEach((name, i) => {
+    ["Day", "Week", "Month", "Custom"].forEach((name, i) => {
       const segX = x + i * w / 4;
-      const selectedItalianTab = {
-        Day: "Giorno",
-        Week: "Settimana",
-        Month: "Mese",
-        Custom: "Personalizzato"
-      }[tab] || tab;
-      if (name === selectedItalianTab) {
+      if (name === tab) {
         ctx.fillStyle = soft2;
         roundRect(ctx, segX + (isDark ? 10 : 6), y + (isDark ? 10 : 5), w / 4 - (isDark ? 20 : 12), h - (isDark ? 20 : 10), isDark ? 42 : 8, true, false);
       }
@@ -299,8 +293,8 @@ function renderReportBlob(trades, layout, tab, deposit, credit, withdrawal) {
   function drawAndroidHeader() {
     if (!(isAndroid && isDark)) return;
     drawText("☰", 28, 76, 30, "400", "#d8d8d8");
-    drawText("Storico", 60, 63, 28, "400", "#e5e5e5");
-    drawText("Tutti i simboli", 60, 100, 20, "400", "#b8b8b8");
+    drawText("History", 60, 63, 28, "400", "#e5e5e5");
+    drawText("All symbols", 60, 100, 20, "400", "#b8b8b8");
     drawText("$", 730, 83, 22, "700", "#d8d8d8");
     drawText("↕", 770, 83, 22, "700", "#d8d8d8");
     drawText("▦", 805, 83, 22, "700", "#d8d8d8", "right");
@@ -310,7 +304,7 @@ function renderReportBlob(trades, layout, tab, deposit, credit, withdrawal) {
   function drawAndroidSummary() {
     if (!(isAndroid && isDark)) return 260;
     const y0 = 150;
-    [["Profitto:", totalProfit], ["Deposito:", Number(deposit || 0)], ["Saldo:", balance]].forEach((r, i) => {
+    [["Profit:", totalProfit], ["Deposit:", Number(deposit || 0)], ["Balance:", balance]].forEach((r, i) => {
       const y = y0 + i * 36;
       drawText(r[0], 28, y, 30, "700", "#d0d0d0");
       ctx.strokeStyle = "#3b3b3b";
@@ -327,17 +321,8 @@ function renderReportBlob(trades, layout, tab, deposit, credit, withdrawal) {
   }
 
   function drawRows(startY) {
-    const availableBottom = isAndroid && isDark ? 1460 : 1620;
-    const totalRows = trades.length;
-    const baseRowH = isAndroid && isDark ? 116 : (isMT4 ? 132 : 88);
-    const minRowH = isAndroid && isDark ? 82 : (isMT4 ? 92 : 70);
-    const fitRowH = totalRows > 0
-      ? Math.floor((availableBottom - startY) / totalRows)
-      : baseRowH;
-
-    const rowH = Math.max(minRowH, Math.min(baseRowH, fitRowH));
-    const maxRows = Math.max(1, Math.floor((availableBottom - startY) / rowH));
-    const rows = trades.slice(0, maxRows);
+    const rows = trades.slice(0, isAndroid && isDark ? 9 : 8);
+    const rowH = isAndroid && isDark ? 116 : (isMT4 ? 132 : 88);
 
     rows.forEach((t, i) => {
       const y = startY + i * rowH;
@@ -345,67 +330,41 @@ function renderReportBlob(trades, layout, tab, deposit, credit, withdrawal) {
       ctx.fillRect(0, y, 828, rowH);
       lineY(y + rowH);
 
-      const sym = "XAUUSD";
+      const sym = isMT5 ? "XAUUSD-STD" : "XAUUSD";
       const sideColor = t.side === "buy" ? blue : red;
       const profitColor = Number(t.profit) >= 0 ? blue : red;
-      const scale = Math.min(1, rowH / baseRowH);
 
       if (isAndroid && isDark) {
-        const titleY = y + Math.max(29, 38 * scale);
-        const priceY = y + Math.max(62, 86 * scale);
-        drawText(`${sym}, `, 14, titleY, Math.max(22, 28 * scale), "700", "#d7d7d7");
+        drawText(`${sym}, `, 14, y + 38, 28, "700", "#d7d7d7");
         const sw = ctx.measureText(`${sym}, `).width;
-        drawText(`${t.side === "buy" ? "compra" : "vendi"} ${Number(t.lot).toFixed(2)}`, 14 + sw, titleY, Math.max(22, 28 * scale), "700", sideColor);
-        drawText(`${price(t.entry)} → ${price(t.exit)}`, 14, priceY, Math.max(23, 30 * scale), "400", "#d7d7d7");
-        drawText(reportDate(t.closeTime), 810, titleY, Math.max(20, 27 * scale), "700", "#d0d0d0", "right");
-        drawText(money(t.profit), 810, priceY, Math.max(23, 30 * scale), "700", profitColor, "right");
+        drawText(`${t.side} ${Number(t.lot).toFixed(2)}`, 14 + sw, y + 38, 28, "700", sideColor);
+        drawText(`${price(t.entry)} → ${price(t.exit)}`, 14, y + 86, 30, "400", "#d7d7d7");
+        drawText(reportDate(t.closeTime), 810, y + 36, 27, "700", "#d0d0d0", "right");
+        drawText(money(t.profit), 810, y + 88, 30, "700", profitColor, "right");
         return;
       }
 
-      const titleY = y + Math.max(28, (isMT4 ? 48 : 34) * scale);
-      const priceY = y + Math.max(58, (isMT4 ? 100 : 67) * scale);
-      const titleSize = Math.max(23, (isMT4 ? 31 : 30) * scale);
-      const priceSize = Math.max(24, (isMT4 ? 33 : 30) * scale);
-      const dateSize = Math.max(19, (isMT4 ? 26 : 22) * scale);
-      const profitSize = Math.max(24, (isMT4 ? 32 : 28) * scale);
-
-      drawText(`${sym}, `, 20, titleY, titleSize, "900", text);
+      drawText(`${sym}, `, 20, y + (isMT4 ? 48 : 34), isMT4 ? 31 : 30, "900", text);
       const sw = ctx.measureText(`${sym}, `).width;
-      drawText(`${t.side === "buy" ? "compra" : "vendi"} ${Number(t.lot).toFixed(2)}`, 20 + sw, titleY, titleSize, "900", sideColor);
-      drawText(`${price(t.entry)} → ${price(t.exit)}`, 20, priceY, priceSize, "400", muted);
-      drawText(reportDate(t.closeTime), 810, titleY, dateSize, "700", muted, "right");
-      drawText(money(t.profit), 810, priceY, profitSize, "900", profitColor, "right");
+      drawText(`${t.side} ${Number(t.lot).toFixed(2)}`, 20 + sw, y + (isMT4 ? 48 : 34), isMT4 ? 31 : 30, "900", sideColor);
+      drawText(`${price(t.entry)} → ${price(t.exit)}`, 20, y + (isMT4 ? 100 : 67), isMT4 ? 33 : 30, "400", muted);
+      drawText(reportDate(t.closeTime), 810, y + (isMT4 ? 44 : 34), isMT4 ? 26 : 22, "700", muted, "right");
+      drawText(money(t.profit), 810, y + (isMT4 ? 100 : 67), isMT4 ? 32 : 28, "900", profitColor, "right");
     });
-
-    return {
-      endY: startY + rows.length * rowH,
-      shownRows: rows.length,
-      totalRows
-    };
+    return startY + rows.length * rowH;
   }
 
-  function drawSummary(rowsInfo) {
-    if (isAndroid && isDark) return false;
-
-    const { endY, shownRows, totalRows } = rowsInfo;
-    const summaryHeight = 250;
-    const summaryBottomLimit = 1620;
-
-    if (shownRows < totalRows || endY + summaryHeight > summaryBottomLimit) {
-      return false;
-    }
-
+  function drawSummary(y) {
+    if (isAndroid && isDark) return;
     const minY = isMT5 ? 1390 : 1030;
-    const sy = Math.max(endY + 16, minY);
+    const sy = Math.max(y + 16, minY);
     lineY(sy - 20);
 
-    [["Profitto:", totalProfit], ["Credito:", Number(credit || 0)], ["Deposito:", Number(deposit || 0)], ["Prelievo:", Number(withdrawal || 0)], ["Saldo:", balance]].forEach((r, i) => {
+    [["Profit:", totalProfit], ["Credit:", Number(credit || 0)], ["Deposit:", Number(deposit || 0)], ["Withdrawal:", Number(withdrawal || 0)], ["Balance:", balance]].forEach((r, i) => {
       const yy = sy + 38 + i * 42;
       drawText(r[0], 20, yy, 32, "900", muted);
       drawText(money(r[1]), 810, yy, 32, "900", muted, "right");
     });
-
-    return true;
   }
 
   function drawBottomNav() {
@@ -439,16 +398,16 @@ function renderReportBlob(trades, layout, tab, deposit, credit, withdrawal) {
       ctx.fillRect(0, y - 10, 828, 140);
     }
 
-    const items = ["Quotazioni", "Grafico", "Operazioni", "Storico", "Impostazioni"];
+    const items = ["Quotes", "Chart", "Trade", "History", "Settings"];
     const icons = ["↗", "▥", "↗", "▰", "⚙"];
     items.forEach((item, i) => {
       const x = 70 + i * 172;
-      if (item === "Storico") {
+      if (item === "History") {
         ctx.fillStyle = isDark ? "#3a3a3a" : "#dce6ff";
         roundRect(ctx, x - 58, y + 6, 116, 76, isDark ? 38 : 10, true, false);
       }
-      drawText(icons[i], x, y + 42, 34, "900", item === "Storico" ? "#0767e8" : "#9a9a9a", "center");
-      drawText(item, x, y + 78, 18, "700", item === "Storico" ? "#0767e8" : "#777", "center");
+      drawText(icons[i], x, y + 42, 34, "900", item === "History" ? "#0767e8" : "#9a9a9a", "center");
+      drawText(item, x, y + 78, 18, "700", item === "History" ? "#0767e8" : "#777", "center");
     });
 
     if (!isDark) {
@@ -468,8 +427,8 @@ function renderReportBlob(trades, layout, tab, deposit, credit, withdrawal) {
     startY = isDark ? 240 : (isMT4 ? 208 : 195);
   }
 
-  const rowsInfo = drawRows(startY);
-  drawSummary(rowsInfo);
+  const afterRows = drawRows(startY);
+  drawSummary(afterRows);
   drawBottomNav();
 
   return new Promise(resolve => canvas.toBlob(resolve, "image/png"));
@@ -712,7 +671,7 @@ export default function LucaTradingAuto() {
           }
         }
 
-        arr.sort((a, b) => new Date(a.closeTime).getTime() - new Date(b.closeTime).getTime());
+        arr.sort((a, b) => a.openTime - b.openTime);
         const total = arr.reduce((a, t) => a + t.profit, 0);
 
         if (arr.length && total >= Number(profitMin) && total <= Number(profitMax)) {
@@ -730,24 +689,7 @@ export default function LucaTradingAuto() {
     }
 
     setAutoSets(created);
-    setTrades([...created[0].trades].sort((a, b) => new Date(a.closeTime).getTime() - new Date(b.closeTime).getTime()));
-  }
-
-  function sortByCloseTime() {
-    setTrades(prev => [...prev].sort(
-      (a, b) => new Date(a.closeTime).getTime() - new Date(b.closeTime).getTime()
-    ));
-  }
-
-  function moveTrade(index, direction) {
-    setTrades(prev => {
-      const target = index + direction;
-      if (target < 0 || target >= prev.length) return prev;
-
-      const next = [...prev];
-      [next[index], next[target]] = [next[target], next[index]];
-      return next;
-    });
+    setTrades(created[0].trades);
   }
 
   function updateTrade(index, field, value) {
@@ -766,7 +708,7 @@ export default function LucaTradingAuto() {
 
       u.profit = Number(pnl(u.side, u.entry, u.exit, u.lot, Number(pointValue)).toFixed(2));
       return u;
-    }).sort((a, b) => new Date(a.closeTime).getTime() - new Date(b.closeTime).getTime()));
+    }));
   }
 
   async function screenshot() {
@@ -781,12 +723,9 @@ export default function LucaTradingAuto() {
     const rows = ["screen,side,lot,open_time,entry,close_time,exit,profit"];
 
     for (const set of autoSets) {
-      const orderedSet = [...set.trades].sort(
-        (a, b) => new Date(a.closeTime).getTime() - new Date(b.closeTime).getTime()
-      );
-      const blob = await renderReportBlob(orderedSet, layout, tab, deposit, credit, withdrawal);
+      const blob = await renderReportBlob(set.trades, layout, tab, deposit, credit, withdrawal);
       zip.file(`${set.name}.png`, blob);
-      orderedSet.forEach(t => {
+      set.trades.forEach(t => {
         rows.push(`${set.name},${t.side},${Number(t.lot).toFixed(2)},${itDate(t.openTime)},${price(t.entry)},${itDate(t.closeTime)},${price(t.exit)},${Number(t.profit).toFixed(2)}`);
       });
     }
@@ -818,7 +757,7 @@ export default function LucaTradingAuto() {
       entrySource: "open",
       exitSource: "close",
       profit: Number(pnl(side, entry, exit, lot, Number(pointValue)).toFixed(2))
-    }].sort((a, b) => new Date(a.closeTime).getTime() - new Date(b.closeTime).getTime()));
+    }]);
   }
 
   return (
@@ -836,7 +775,7 @@ export default function LucaTradingAuto() {
         <div className="grid">
           <label>CSV TradingView/OANDA/Numbers<input type="file" accept=".csv,.txt,.tsv,.numbers" onChange={e => e.target.files?.[0] && loadCSV(e.target.files[0])}/></label>
           <label>Layout<select value={layout} onChange={e => setLayout(e.target.value)}><option value="ios_mt5_white">iOS MT5 bianco</option><option value="ios_mt5_dark">iOS MT5 nero</option><option value="ios_mt4_white">iOS MT4 bianco</option><option value="ios_mt4_dark">iOS MT4 nero</option><option value="android_mt4_white">Android MT4 bianco</option><option value="android_mt4_dark">Android MT4 nero</option></select></label>
-          <label>Periodo nello screen<select value={tab} onChange={e => setTab(e.target.value)}><option value="Day">Giorno</option><option value="Week">Settimana</option><option value="Month">Mese</option><option value="Custom">Personalizzato</option></select></label>
+          <label>Tab report<select value={tab} onChange={e => setTab(e.target.value)}><option>Day</option><option>Week</option><option>Month</option><option>Custom</option></select></label>
           <label>Valore punto 1 lotto<input type="number" value={pointValue} onChange={e => setPointValue(e.target.value)}/></label>
           <label>Deposit<input type="number" value={deposit} onChange={e => setDeposit(e.target.value)}/></label>
           <label>Credit<input type="number" value={credit} onChange={e => setCredit(e.target.value)}/></label>
@@ -888,9 +827,6 @@ export default function LucaTradingAuto() {
       <section className="panel">
         <h2>2. Operazioni modificabili</h2>
         <p className="hint">Puoi cambiare tutto: tipo, lotto, date, orari, apertura e chiusura. Il P/L si aggiorna subito.</p>
-        <div className="actions">
-          <button onClick={sortByCloseTime}>Ordina per data e ora di chiusura</button>
-        </div>
 
         <table>
           <thead>
@@ -905,7 +841,6 @@ export default function LucaTradingAuto() {
               <th>Ora chiusura</th>
               <th>Prezzo chiusura</th>
               <th>P/L</th>
-              <th>Sposta</th>
               <th></th>
             </tr>
           </thead>
@@ -922,22 +857,6 @@ export default function LucaTradingAuto() {
                 <td><input className="table-input time" value={htmlTime(t.closeTime)} onChange={e => updateTrade(i, "closeTime", e.target.value)}/></td>
                 <td><input className="table-input price" type="number" step="0.01" value={t.exit} onChange={e => updateTrade(i, "exit", e.target.value)}/>{t.exitSource && <small className="source">CSV {t.exitSource}</small>}</td>
                 <td className={Number(t.profit) >= 0 ? "pos" : "neg"}>{money(t.profit)}</td>
-                <td>
-                  <div style={{display:"flex", gap:"6px"}}>
-                    <button
-                      type="button"
-                      title="Sposta sopra"
-                      disabled={i === 0}
-                      onClick={() => moveTrade(i, -1)}
-                    >↑</button>
-                    <button
-                      type="button"
-                      title="Sposta sotto"
-                      disabled={i === trades.length - 1}
-                      onClick={() => moveTrade(i, 1)}
-                    >↓</button>
-                  </div>
-                </td>
                 <td><button onClick={() => setTrades(trades.filter((_, x) => x !== i))}>×</button></td>
               </tr>
             )}
