@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Papa from "papaparse";
 import JSZip from "jszip";
 import "./style.css";
@@ -204,6 +204,50 @@ function downloadBlob(blob, filename) {
 
 function formatCandle(c) {
   return `${itDate(c.time, false)} | O ${price(c.open)} H ${price(c.high)} L ${price(c.low)} C ${price(c.close)}`;
+}
+
+function candleSignature(c) {
+  if (!c?.time) return "";
+  return [
+    new Date(c.time).getTime(),
+    Number(c.open).toFixed(5),
+    Number(c.high).toFixed(5),
+    Number(c.low).toFixed(5),
+    Number(c.close).toFixed(5)
+  ].join("|");
+}
+
+function todayRomeKey() {
+  return dayKey(new Date());
+}
+
+function usedCandlesStorageKey() {
+  return `luca-trading-used-candles:${todayRomeKey()}`;
+}
+
+function readUsedCandlesToday() {
+  if (typeof window === "undefined") return new Set();
+
+  try {
+    const raw = window.localStorage.getItem(usedCandlesStorageKey());
+    const values = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(values) ? values : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveUsedCandlesToday(usedSet) {
+  if (typeof window === "undefined") return;
+
+  try {
+    window.localStorage.setItem(
+      usedCandlesStorageKey(),
+      JSON.stringify(Array.from(usedSet))
+    );
+  } catch {
+    // Se localStorage non è disponibile, l'app continua a funzionare nella sessione.
+  }
 }
 
 function renderReportBlob(trades, layout, tab, deposit, credit, withdrawal) {
@@ -479,6 +523,7 @@ export default function LucaTradingAuto() {
   const [candles, setCandles] = useState([]);
   const [trades, setTrades] = useState([]);
   const [autoSets, setAutoSets] = useState([]);
+  const [usedCandleKeys, setUsedCandleKeys] = useState([]);
 
   const [layout, setLayout] = useState("ios_mt5_white");
   const [tab, setTab] = useState("Week");
@@ -513,6 +558,24 @@ export default function LucaTradingAuto() {
   const [scenario3Close, setScenario3Close] = useState("");
 
   const totalProfit = useMemo(() => trades.reduce((a, t) => a + Number(t.profit || 0), 0), [trades]);
+
+  useEffect(() => {
+    const refreshUsedCandles = () => {
+      setUsedCandleKeys(Array.from(readUsedCandlesToday()));
+    };
+
+    refreshUsedCandles();
+
+    // Se la pagina resta aperta oltre la mezzanotte, passa automaticamente
+    // al nuovo archivio giornaliero senza richiedere il refresh.
+    const timer = window.setInterval(refreshUsedCandles, 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const usedCandleSet = useMemo(
+    () => new Set(usedCandleKeys),
+    [usedCandleKeys]
+  );
 
   const dayOptions = useMemo(() => {
     const map = new Map();
@@ -613,9 +676,12 @@ export default function LucaTradingAuto() {
     });
   }
 
-  function buildTrade(wantPositive, pool, sc) {
+  function buildTrade(wantPositive, pool, sc, reservedKeys = new Set()) {
     const openTarget = sc?.open !== null && !Number.isNaN(sc?.open) ? sc.open : null;
     const closeTarget = sc?.close !== null && !Number.isNaN(sc?.close) ? sc.close : null;
+
+    const availablePool = pool.filter(c => !reservedKeys.has(candleSignature(c)));
+    if (availablePool.length < 2) return null;
 
     for (let tries = 0; tries < 900; tries++) {
       let openPick;
@@ -626,10 +692,10 @@ export default function LucaTradingAuto() {
       // Se compili uno scenario, quel valore viene usato solo come riferimento:
       // l'app prende il valore OHLC reale più vicino nel CSV.
       if (openTarget !== null) {
-        openPick = pickCandleNear(pool, openTarget, 0, pool.length - 2);
+        openPick = pickCandleNear(availablePool, openTarget, 0, availablePool.length - 2);
       } else {
-        const a = randInt(0, pool.length - 2);
-        const c1 = pool[a];
+        const a = randInt(0, availablePool.length - 2);
+        const c1 = availablePool[a];
         const v1 = choose(ohlcValues(c1));
         openPick = { index: a, candle: c1, value: v1.value, source: v1.label };
       }
@@ -637,10 +703,10 @@ export default function LucaTradingAuto() {
       if (!openPick) continue;
 
       if (closeTarget !== null) {
-        closePick = pickCandleNear(pool, closeTarget, openPick.index + 1, pool.length - 1);
+        closePick = pickCandleNear(availablePool, closeTarget, openPick.index + 1, availablePool.length - 1);
       } else {
-        const b = randInt(openPick.index + 1, pool.length - 1);
-        const c2 = pool[b];
+        const b = randInt(openPick.index + 1, availablePool.length - 1);
+        const c2 = availablePool[b];
         const v2 = choose(ohlcValues(c2));
         closePick = { index: b, candle: c2, value: v2.value, source: v2.label };
       }
@@ -662,6 +728,9 @@ export default function LucaTradingAuto() {
 
       if (wantPositive && profit <= 0) continue;
       if (!wantPositive && profit >= 0) continue;
+
+      reservedKeys.add(candleSignature(openPick.candle));
+      reservedKeys.add(candleSignature(closePick.candle));
 
       return {
         side,
@@ -687,6 +756,7 @@ export default function LucaTradingAuto() {
 
     const scs = scenarios();
     const created = [];
+    const confirmedUsed = new Set(usedCandleSet);
 
     for (let s = 0; s < Number(screenCount || 1); s++) {
       let best = null;
@@ -694,6 +764,7 @@ export default function LucaTradingAuto() {
       for (let attempt = 0; attempt < 600; attempt++) {
         const arr = [];
         let scenarioCursor = 0;
+        const attemptUsed = new Set(confirmedUsed);
 
         for (const day of dayKeys) {
           const pool = validTimePool(day);
@@ -701,13 +772,13 @@ export default function LucaTradingAuto() {
 
           for (let i = 0; i < Number(autoPositive || 0); i++) {
             const sc = scs[scenarioCursor++ % scs.length];
-            const t = buildTrade(true, pool, sc);
+            const t = buildTrade(true, pool, sc, attemptUsed);
             if (t) arr.push(t);
           }
 
           for (let i = 0; i < Number(autoNegative || 0); i++) {
             const sc = scs[scenarioCursor++ % scs.length];
-            const t = buildTrade(false, pool, sc);
+            const t = buildTrade(false, pool, sc, attemptUsed);
             if (t) arr.push(t);
           }
         }
@@ -717,6 +788,14 @@ export default function LucaTradingAuto() {
 
         if (arr.length && total >= Number(profitMin) && total <= Number(profitMax)) {
           best = arr;
+
+          arr.forEach(t => {
+            const openCandle = candles.find(c => c.id === t.openCandleId);
+            const closeCandle = candles.find(c => c.id === t.closeCandleId);
+            if (openCandle) confirmedUsed.add(candleSignature(openCandle));
+            if (closeCandle) confirmedUsed.add(candleSignature(closeCandle));
+          });
+
           break;
         }
       }
@@ -725,9 +804,12 @@ export default function LucaTradingAuto() {
     }
 
     if (!created.length) {
-      alert("Non riesco con questi vincoli. Allarga profitto min/max, lotti o orari.");
+      alert("Non riesco con questi vincoli oppure le candele nuove disponibili per oggi non sono sufficienti. Le candele già usate restano escluse anche dopo refresh o cambio CSV.");
       return;
     }
+
+    saveUsedCandlesToday(confirmedUsed);
+    setUsedCandleKeys(Array.from(confirmedUsed));
 
     setAutoSets(created);
     setTrades([...created[0].trades].sort((a, b) => new Date(a.closeTime).getTime() - new Date(b.closeTime).getTime()));
@@ -797,14 +879,27 @@ export default function LucaTradingAuto() {
   }
 
   function addBlankTrade() {
-    const base = selectedCandles[0] || candles[0];
-    const next = selectedCandles[1] || candles[1] || base;
-    if (!base) return alert("Carica prima il CSV.");
+    const available = selectedCandles.filter(
+      c => !usedCandleSet.has(candleSignature(c))
+    );
+
+    const base = available[0];
+    const next = available[1];
+
+    if (!base || !next) {
+      return alert("Non ci sono almeno due candele nuove disponibili per oggi.");
+    }
 
     const side = "buy";
     const lot = 0.050;
     const entry = base.open;
     const exit = next.close;
+
+    const updatedUsed = new Set(usedCandleSet);
+    updatedUsed.add(candleSignature(base));
+    updatedUsed.add(candleSignature(next));
+    saveUsedCandlesToday(updatedUsed);
+    setUsedCandleKeys(Array.from(updatedUsed));
 
     setTrades(prev => [...prev, {
       side,
@@ -879,8 +974,8 @@ export default function LucaTradingAuto() {
 
         <div className="stats">
           <div><span>Candele totali</span><b>{candles.length}</b></div>
-          <div><span>Candele selezionate</span><b>{selectedCandles.length}</b></div>
-          <div><span>Giorni selezionati</span><b>{selectedDayKeys.length}</b></div>
+          <div><span>Candele disponibili oggi</span><b>{selectedCandles.filter(c => !usedCandleSet.has(candleSignature(c))).length}</b></div>
+          <div><span>Candele già usate oggi</span><b>{usedCandleKeys.length}</b></div>
           <div><span>Profitto tabella</span><b className={totalProfit >= 0 ? "pos" : "neg"}>{money(totalProfit)}</b></div>
         </div>
       </section>
