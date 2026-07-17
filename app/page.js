@@ -627,7 +627,7 @@ async function renderTelegramDemo({
   for(const line of replyLines){ctx.fillText(line,outX+25,ry);ry+=replyLineH;}
   ctx.fillStyle=dark?"#53bdeb":"#37a95b";
   ctx.font="26px Arial";ctx.textAlign="right";
-  ctx.fillText(`${formatHour(replyTime)} ✓✓`,outX+outW-20,outY+outH-18);
+ ctx.fillText(`${formatHour(replyTime)} ✓`, outX + outW - 20, outY + outH - 18);
 
   // Niente barra di composizione: gli allegati sono ritagliati prima dell'input.
   return new Promise(resolve=>canvas.toBlob(resolve,"image/png"));
