@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useState, useMemo, useRef } from "react";
 import Papa from "papaparse";
 import JSZip from "jszip";
 import "./style.css";
@@ -9,7 +9,6 @@ const TZ = "Europe/Rome";
 
 function toNum(v) {
   const s = String(v ?? "").trim().replace(/\s/g, "");
-  if (s === "") return NaN;
   if (s.includes(",") && s.includes(".")) return Number(s.replace(/\./g, "").replace(",", "."));
   if (s.includes(",")) return Number(s.replace(",", "."));
   return Number(s);
@@ -17,9 +16,7 @@ function toNum(v) {
 
 function findHeader(row, names) {
   const map = {};
-  Object.keys(row).forEach(k => {
-    map[k.toLowerCase().trim().replace("\ufeff", "")] = k;
-  });
+  Object.keys(row).forEach(k => map[k.toLowerCase().trim().replace("\ufeff", "")] = k);
   for (const name of names) if (map[name]) return map[name];
   return null;
 }
@@ -28,158 +25,70 @@ function parseDate(v) {
   const raw = String(v ?? "").trim();
   if (!raw) return null;
 
-  // TradingView CSV: timestamp UNIX UTC, secondi o millisecondi.
+  // TradingView CSV: UNIX timestamp UTC, seconds or milliseconds
   if (/^\d{10}$/.test(raw)) return new Date(Number(raw) * 1000);
   if (/^\d{13}$/.test(raw)) return new Date(Number(raw));
 
-  // Formato Numbers/TradingView esportato:
-  // 2026-07-02T19:57:00+02:00
-  // 2026-07-02 19:57:00+02:00
-  // 2026-07-02T19:57:00
-  const iso = raw.replace(" ", "T");
-  const d1 = new Date(iso);
-  if (!Number.isNaN(d1.getTime())) return d1;
+  let d = new Date(raw.replace(" ", "T"));
+  if (!Number.isNaN(d.getTime())) return d;
 
-  // Formato italiano: 02/07/2026 19:57:00
   const m = raw.match(/^(\d{2})\/(\d{2})\/(\d{4})\s+(\d{2}):(\d{2})(?::(\d{2}))?/);
   if (m) {
-    const d2 = new Date(`${m[3]}-${m[2]}-${m[1]}T${m[4]}:${m[5]}:${m[6] || "00"}`);
-    if (!Number.isNaN(d2.getTime())) return d2;
+    d = new Date(`${m[3]}-${m[2]}-${m[1]}T${m[4]}:${m[5]}:${m[6] || "00"}`);
+    if (!Number.isNaN(d.getTime())) return d;
   }
 
   return null;
 }
 
-function partsIT(d) {
-  return new Intl.DateTimeFormat("it-IT", {
+function timeKeyIT(d) {
+  return new Intl.DateTimeFormat("sv-SE", {
     timeZone: TZ,
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
-    second: "2-digit",
     hour12: false
-  }).formatToParts(d).reduce((a, x) => {
-    a[x.type] = x.value;
-    return a;
-  }, {});
-}
-
-function dayKey(d) {
-  const p = partsIT(d);
-  return `${p.year}-${p.month}-${p.day}`;
-}
-
-function dayLabel(d) {
-  return new Intl.DateTimeFormat("it-IT", {
-    timeZone: TZ,
-    weekday: "short",
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric"
   }).format(d);
 }
 
 function itDate(d, seconds = true) {
   if (!d) return "-";
-  const p = partsIT(d);
+  const p = new Intl.DateTimeFormat("it-IT", {
+    timeZone: TZ,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: seconds ? "2-digit" : undefined,
+    hour12: false
+  }).formatToParts(d).reduce((a, x) => { a[x.type] = x.value; return a; }, {});
   return `${p.day}/${p.month}/${p.year} ${p.hour}:${p.minute}${seconds ? ":" + p.second : ""}`;
 }
 
 function reportDate(d) {
-  const p = partsIT(d);
-  return `${p.year}.${p.month}.${p.day} ${p.hour}:${p.minute}:${p.second}`;
-}
-
-function htmlDate(d) {
-  const p = partsIT(d);
-  return `${p.year}-${p.month}-${p.day}`;
-}
-
-function htmlTime(d) {
-  const p = partsIT(d);
-  return `${p.hour}:${p.minute}:${p.second}`;
-}
-
-function dateFromInputs(dateStr, timeStr) {
-  const safeDate = dateStr || "2026-01-01";
-  const safeTime = (timeStr || "00:00:00").length === 5 ? `${timeStr}:00` : (timeStr || "00:00:00");
-  const [y, m, d] = safeDate.split("-").map(Number);
-  const [hh, mm, ss] = safeTime.split(":").map(Number);
-
-  // Crea una data locale browser. Per il report conta il testo mostrato e la coerenza interna.
-  return new Date(y, (m || 1) - 1, d || 1, hh || 0, mm || 0, ss || 0);
+  const s = itDate(d, true);
+  const [date, tm] = s.split(" ");
+  const [dd, mm, yy] = date.split("/");
+  return `${yy}.${mm}.${dd} ${tm}`;
 }
 
 function money(v) {
-  return Number(v || 0).toLocaleString("it-IT", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2
-  }).replace(/\./g, " ");
+  return Number(v || 0).toLocaleString("it-IT", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).replace(/\./g, " ");
 }
 
 function price(v) {
-  return Number(v || 0).toFixed(2);
+  return Number(v).toFixed(3);
 }
 
 function pnl(side, entry, exit, lot, pointValue) {
-  return side === "buy"
-    ? (Number(exit) - Number(entry)) * Number(lot) * Number(pointValue)
-    : (Number(entry) - Number(exit)) * Number(lot) * Number(pointValue);
+  return side === "buy" ? (exit - entry) * lot * pointValue : (entry - exit) * lot * pointValue;
 }
 
-function rand(min, max) {
-  return Number(min) + Math.random() * (Number(max) - Number(min));
-}
-
-function randInt(min, max) {
-  return Math.floor(rand(min, max + 1));
-}
-
-function choose(arr) {
-  return arr[randInt(0, arr.length - 1)];
-}
-
-function ohlcValues(c) {
-  return [
-    { label: "open", value: c.open },
-    { label: "high", value: c.high },
-    { label: "low", value: c.low },
-    { label: "close", value: c.close }
-  ];
-}
-
-function nearestOHLC(c, target) {
-  const values = ohlcValues(c);
-  if (target === null || Number.isNaN(target)) return choose(values);
-  return values.reduce((best, item) =>
-    Math.abs(item.value - target) < Math.abs(best.value - target) ? item : best
-  , values[0]);
-}
-
-function pickCandleNear(pool, target, startIndex = 0, endIndex = pool.length - 1) {
-  const from = Math.max(0, startIndex);
-  const to = Math.min(pool.length - 1, endIndex);
-  let best = null;
-
-  for (let i = from; i <= to; i++) {
-    const c = pool[i];
-    const nearest = nearestOHLC(c, target);
-    const distance = target === null || Number.isNaN(target) ? Math.random() : Math.abs(nearest.value - target);
-
-    if (!best || distance < best.distance) {
-      best = { index: i, candle: c, value: nearest.value, source: nearest.label, distance };
-    }
-  }
-
-  return best;
-}
-
-function withRandomSecond(d) {
-  const x = new Date(d);
-  x.setSeconds(randInt(0, 59));
-  return x;
+function candleMenu(c) {
+  return `${itDate(c.time, false)} | O ${price(c.open)} H ${price(c.high)} L ${price(c.low)} C ${price(c.close)}`;
 }
 
 function roundRect(ctx, x, y, w, h, r, fill, stroke) {
@@ -202,797 +111,180 @@ function downloadBlob(blob, filename) {
   URL.revokeObjectURL(a.href);
 }
 
-function formatCandle(c) {
-  return `${itDate(c.time, false)} | O ${price(c.open)} H ${price(c.high)} L ${price(c.low)} C ${price(c.close)}`;
+function rand(min, max) {
+  return min + Math.random() * (max - min);
 }
 
-function candleSignature(c) {
-  if (!c?.time) return "";
-  return [
-    new Date(c.time).getTime(),
-    Number(c.open).toFixed(5),
-    Number(c.high).toFixed(5),
-    Number(c.low).toFixed(5),
-    Number(c.close).toFixed(5)
-  ].join("|");
+function randInt(min, max) {
+  return Math.floor(rand(min, max + 1));
 }
 
-function todayRomeKey() {
-  return dayKey(new Date());
+function clamp(v, min, max) {
+  return Math.max(min, Math.min(max, v));
 }
 
-function usedCandlesStorageKey() {
-  return `luca-trading-used-candles:${todayRomeKey()}`;
+function setSecond(d, s) {
+  const x = new Date(d);
+  x.setSeconds(s);
+  return x;
 }
 
-function readUsedCandlesToday() {
-  if (typeof window === "undefined") return new Set();
+function Chart({ candles, trades, selected, preview, onPick, onPreview }) {
+  const ref = useRef(null);
+  const visible = candles.slice(-360);
+  if (!visible.length) return <div className="empty-chart">Carica un CSV TradingView/OANDA per vedere il grafico con anteprima.</div>;
 
-  try {
-    const raw = window.localStorage.getItem(usedCandlesStorageKey());
-    const values = raw ? JSON.parse(raw) : [];
-    return new Set(Array.isArray(values) ? values : []);
-  } catch {
-    return new Set();
-  }
-}
+  const W = 1200, H = 520, L = 54, R = 20, T = 24, B = 38;
+  const min = Math.min(...visible.map(c => c.low));
+  const max = Math.max(...visible.map(c => c.high));
+  const range = max - min || 1;
+  const step = (W - L - R) / visible.length;
+  const y = v => T + (max - v) / range * (H - T - B);
 
-function saveUsedCandlesToday(usedSet) {
-  if (typeof window === "undefined") return;
-
-  try {
-    window.localStorage.setItem(
-      usedCandlesStorageKey(),
-      JSON.stringify(Array.from(usedSet))
-    );
-  } catch {
-    // Se localStorage non è disponibile, l'app continua a funzionare nella sessione.
-  }
-}
-
-
-const TELEGRAM_NAMES = {
-  male: ["Marco", "Luca", "Matteo", "Andrea", "Davide", "Simone", "Alessandro", "Federico"],
-  female: ["Giulia", "Martina", "Sara", "Elena", "Chiara", "Francesca", "Alessia", "Valentina"]
-};
-
-const TELEGRAM_PHRASES = {
-  male: [
-    "Ciao Cesare, questa settimana è andata davvero bene 💪😎",
-    "Settimana chiusa con grande soddisfazione, grazie per le indicazioni 🚀💪",
-    "Poche operazioni ma molto precise. Sono davvero contento del risultato 😎🔥",
-    "Eccomi con il risultato, questa volta ho seguito tutto alla lettera 💪📈"
-  ],
-  female: [
-    "Ciao Cesare, sono davvero contenta del risultato di questa settimana ❤️😊",
-    "Eccomi con il risultato, grazie per tutte le indicazioni 😍📈",
-    "Questa settimana è andata molto meglio del previsto ❤️✨",
-    "Sono riuscita a seguire tutto e il risultato mi rende felicissima 😊💪"
-  ]
-};
-
-const TELEGRAM_REPLIES = {
-  male: ["Grande {name} 😎💪", "Ottimo lavoro {name} 🔥💪", "Vamos {name} 😎🚀", "Daje {name}, continua così 💪🔥"],
-  female: ["Grande {name} 😎❤️", "Ottimo lavoro {name} 😍✨", "Bravissima {name} ❤️🙌", "Vamos {name} 😎💪"]
-};
-
-function telegramStorageKey() {
-  return "luca-trading-telegram-demo-history";
-}
-
-function readTelegramHistory() {
-  if (typeof window === "undefined") return { phrases: [], replies: [], names: [], lastGender: "female" };
-  try {
-    const raw = window.localStorage.getItem(telegramStorageKey());
-    const parsed = raw ? JSON.parse(raw) : {};
-    return {
-      phrases: Array.isArray(parsed.phrases) ? parsed.phrases : [],
-      replies: Array.isArray(parsed.replies) ? parsed.replies : [],
-      names: Array.isArray(parsed.names) ? parsed.names : [],
-      lastGender: parsed.lastGender === "male" ? "male" : "female"
-    };
-  } catch {
-    return { phrases: [], replies: [], names: [], lastGender: "female" };
-  }
-}
-
-function saveTelegramHistory(history) {
-  if (typeof window !== "undefined") {
-    window.localStorage.setItem(telegramStorageKey(), JSON.stringify(history));
-  }
-}
-
-function randomFromUnused(items, used) {
-  const available = items.filter(item => !used.includes(item));
-  return choose(available.length ? available : items);
-}
-
-function addMinutes(date, minutes) {
-  return new Date(date.getTime() + minutes * 60000);
-}
-
-function formatHour(date) {
-  const p = partsIT(date);
-  return `${p.hour}:${p.minute}`;
-}
-
-function weeklyMessageTime() {
-  const now = new Date();
-  const p = partsIT(now);
-  const hour = randInt(9, 17);
-  const minute = randInt(0, 59);
-  return dateFromInputs(`${p.year}-${p.month}-${p.day}`, `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}:00`);
-}
-
-function fileToImage(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const img = new Image();
-      img.onload = () => resolve(img);
-      img.onerror = reject;
-      img.src = reader.result;
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
-}
-
-function wrapCanvasText(ctx, text, maxWidth) {
-  const words = String(text || "").trim().split(/\s+/).filter(Boolean);
-  const lines = [];
-  let current = "";
-  for (const word of words) {
-    const next = current ? `${current} ${word}` : word;
-    if (current && ctx.measureText(next).width > maxWidth) {
-      lines.push(current);
-      current = word;
-    } else {
-      current = next;
-    }
-  }
-  if (current) lines.push(current);
-  return lines.length ? lines : [""];
-}
-
-function drawTelegramWallpaper(ctx, x, y, w, h, dark) {
-  ctx.fillStyle = dark ? "#0b141a" : "#9ed18f";
-  ctx.fillRect(x, y, w, h);
-
-  ctx.save();
-  ctx.globalAlpha = dark ? 0.08 : 0.16;
-  ctx.strokeStyle = dark ? "#8aa4ae" : "#4f9a69";
-  ctx.lineWidth = 2;
-  for (let py = y + 30; py < y + h; py += 105) {
-    for (let px = x + 25; px < x + w; px += 115) {
-      ctx.beginPath();
-      ctx.arc(px, py, 13, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.moveTo(px - 17, py + 25);
-      ctx.quadraticCurveTo(px, py + 10, px + 19, py + 25);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.moveTo(px + 34, py - 14);
-      ctx.lineTo(px + 54, py + 14);
-      ctx.lineTo(px + 30, py + 22);
-      ctx.closePath();
-      ctx.stroke();
-    }
-  }
-  ctx.restore();
-}
-
-async function renderTelegramDemo({
-  screenshotFile,
-  avatarFile,
-  backgroundFile,
-  unreadCount,
-  privacyMask,
-  name,
-  message,
-  reply,
-  messageTime,
-  replyTime,
-  mode,
-  theme
-}) {
-  const screenshot = await fileToImage(screenshotFile);
-  const avatar = avatarFile ? await fileToImage(avatarFile) : null;
-  const background = backgroundFile ? await fileToImage(backgroundFile) : null;
-  const dark = theme === "dark";
-  const weekly = mode === "weekly";
-
-  const W = 1170;
-  const H = weekly ? 2532 : 2160;
-  const canvas = document.createElement("canvas");
-  canvas.width = W;
-  canvas.height = H;
-  const ctx = canvas.getContext("2d");
-
-  const demoH = 58;
-
-  if (background) {
-    const bgScale = Math.max(W / background.width, (H - demoH) / background.height);
-    const bgW = background.width * bgScale;
-    const bgH = background.height * bgScale;
-    ctx.drawImage(
-      background,
-      (W - bgW) / 2,
-      demoH + ((H - demoH) - bgH) / 2,
-      bgW,
-      bgH
-    );
-  } else {
-    // Fallback verde vicino ai riferimenti allegati.
-    const grad = ctx.createLinearGradient(0, demoH, W, H);
-    grad.addColorStop(0, dark ? "#101b18" : "#d9e9a8");
-    grad.addColorStop(0.52, dark ? "#173328" : "#84c982");
-    grad.addColorStop(1, dark ? "#0f2520" : "#54b88d");
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, demoH, W, H - demoH);
-    drawTelegramWallpaper(ctx, 0, demoH, W, H - demoH, dark);
+  function candleFromEvent(e) {
+    const rect = ref.current.getBoundingClientRect();
+    const x = (e.clientX - rect.left) * (W / rect.width);
+    const idx = Math.max(0, Math.min(visible.length - 1, Math.floor((x - L) / step)));
+    return visible[idx];
   }
 
-  // Unica marcatura richiesta.
-  ctx.fillStyle = "#c92525";
-  ctx.fillRect(0, 0, W, demoH);
-  ctx.fillStyle = "#fff";
-  ctx.font = "700 27px -apple-system, BlinkMacSystemFont, Arial";
-  ctx.textAlign = "center";
-  ctx.fillText("SIMULAZIONE / DEMO", W / 2, 39);
-
-  // Header vicino ai riferimenti: pulsante indietro separato e pill contatto.
-  const topY = demoH + 20;
-  ctx.fillStyle = dark ? "#1f2c34" : "rgba(255,255,255,.90)";
-  roundRect(ctx, 42, topY, 206, 105, 53, true, false);
-  ctx.fillStyle = dark ? "#f1f4f5" : "#111";
-  ctx.font = "400 70px Arial";
-  ctx.textAlign = "left";
-  ctx.fillText("‹", 72, topY + 73);
-  ctx.font = "700 31px Arial";
-  const unreadText = String(Math.max(0, Math.min(999, Number(unreadCount) || 0)));
-  if (unreadText !== "0") {
-    ctx.fillStyle = dark ? "#ffffff" : "#111111";
-    ctx.beginPath();
-    ctx.arc(174, topY + 52, 31, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = dark ? "#111111" : "#ffffff";
-    ctx.textAlign = "center";
-    ctx.font = "700 25px Arial";
-    ctx.fillText(unreadText, 174, topY + 61);
-  }
-
-  const contactX = 300;
-  const contactW = 820;
-  ctx.fillStyle = dark ? "#1f2c34" : "rgba(255,255,255,.90)";
-  roundRect(ctx, contactX, topY, contactW, 105, 53, true, false);
-
-  const avX = contactX + 67, avY = topY + 52, avR = 39;
-  ctx.save();
-  ctx.beginPath(); ctx.arc(avX, avY, avR, 0, Math.PI * 2); ctx.clip();
-  if (avatar) {
-    const s = Math.max((avR*2)/avatar.width, (avR*2)/avatar.height);
-    const aw=avatar.width*s, ah=avatar.height*s;
-    ctx.drawImage(avatar, avX-aw/2, avY-ah/2, aw, ah);
-  } else {
-    // Avatar neutro, senza iniziale artificiale.
-    const avatarGrad = ctx.createLinearGradient(avX-avR, avY-avR, avX+avR, avY+avR);
-    avatarGrad.addColorStop(0, "#d6d6d6");
-    avatarGrad.addColorStop(1, "#8f8f8f");
-    ctx.fillStyle = avatarGrad;
-    ctx.fillRect(avX-avR, avY-avR, avR*2, avR*2);
-    ctx.fillStyle = "rgba(255,255,255,.78)";
-    ctx.beginPath();
-    ctx.arc(avX, avY-9, 15, 0, Math.PI*2);
-    ctx.fill();
-    ctx.beginPath();
-    ctx.arc(avX, avY+27, 28, Math.PI, 0);
-    ctx.fill();
-  }
-  ctx.restore();
-
-  ctx.textAlign="left";
-  ctx.fillStyle=dark?"#f3f5f5":"#111";
-  ctx.font="700 38px -apple-system, BlinkMacSystemFont, Arial";
-  ctx.fillText(name, contactX+126, topY+44);
-  ctx.fillStyle=dark?"#aebac1":"#80868b";
-  ctx.font="25px -apple-system, BlinkMacSystemFont, Arial";
-  ctx.fillText("ultimo accesso recentemente", contactX+126, topY+82);
-
-  // Mascheratura privacy come nei riferimenti.
-  if (privacyMask) {
-    const maskX = contactX + 455;
-    const maskY = topY - 12;
-    const maskW = contactW - 430;
-    const maskH = 124;
-    const maskGrad = ctx.createLinearGradient(maskX, maskY, maskX + maskW, maskY);
-    maskGrad.addColorStop(0, "rgba(0,0,0,.72)");
-    maskGrad.addColorStop(.22, "rgba(0,0,0,.96)");
-    maskGrad.addColorStop(1, "rgba(0,0,0,1)");
-    ctx.fillStyle = maskGrad;
-    roundRect(ctx, maskX, maskY, maskW, maskH, 20, true, false);
-  }
-
-  // Etichetta Oggi.
-  const dayY = topY + 130;
-  ctx.fillStyle = dark ? "rgba(31,44,52,.82)" : "rgba(116,128,133,.72)";
-  roundRect(ctx, W/2-66, dayY, 132, 50, 25, true, false);
-  ctx.fillStyle="#fff"; ctx.font="29px Arial"; ctx.textAlign="center";
-  ctx.fillText("Oggi",W/2,dayY+34);
-
-  // Fit screen: sempre quasi tutta la larghezza, come nei riferimenti.
-  const bubbleX = 27;
-  const bubbleTop = dayY + 68;
-  const targetImageW = weekly ? 820 : 900;
-  const maxImageH = weekly ? 1760 : 1450;
-  let scale = targetImageW / screenshot.width;
-  let drawW = targetImageW;
-  let drawH = screenshot.height * scale;
-  if (drawH > maxImageH) {
-    scale = maxImageH / screenshot.height;
-    drawH = maxImageH;
-    drawW = screenshot.width * scale;
-  }
-  const bubbleW = Math.min(W - 54, drawW + 24);
-  const imageX = bubbleX + 12;
-
-  ctx.font = "44px -apple-system, BlinkMacSystemFont, Arial";
-  const msgLines = wrapCanvasText(ctx, message, bubbleW - 58);
-  const msgLineH = 55;
-  const textH = msgLines.length * msgLineH;
-  const bubbleH = 12 + drawH + 24 + textH + 58;
-
-  ctx.fillStyle = dark ? "#202c33" : "#ffffff";
-  roundRect(ctx, bubbleX, bubbleTop, bubbleW, bubbleH, 24, true, false);
-  ctx.beginPath();
-  ctx.moveTo(bubbleX+5,bubbleTop+bubbleH-32);
-  ctx.lineTo(bubbleX-16,bubbleTop+bubbleH-8);
-  ctx.lineTo(bubbleX+29,bubbleTop+bubbleH-12);
-  ctx.closePath(); ctx.fill();
-
-  // Screen senza fascia vuota laterale: centrato nella bolla, larghezza bolla adattata.
-  ctx.save();
-  roundRect(ctx,imageX,bubbleTop+12,drawW,drawH,13,false,false);
-  ctx.clip();
-  ctx.drawImage(screenshot,imageX,bubbleTop+12,drawW,drawH);
-  ctx.restore();
-
-  ctx.fillStyle=dark?"#f1f4f5":"#111";
-  ctx.font="44px -apple-system, BlinkMacSystemFont, Arial";
-  ctx.textAlign="left";
-  let ty=bubbleTop+12+drawH+58;
-  for(const line of msgLines){ ctx.fillText(line,bubbleX+28,ty); ty+=msgLineH; }
-
-  ctx.fillStyle=dark?"#8696a0":"#8d8d92";
-  ctx.font="26px -apple-system, BlinkMacSystemFont, Arial";
-  ctx.textAlign="right";
-  ctx.fillText(formatHour(messageTime),bubbleX+bubbleW-22,bubbleTop+bubbleH-20);
-
-  // Risposta grande e immediatamente sotto, come nei riferimenti.
-  ctx.font="43px -apple-system, BlinkMacSystemFont, Arial";
-  const replyLines=wrapCanvasText(ctx,reply,760);
-  const replyLineH=53;
-  const replyTextW=Math.max(...replyLines.map(v=>ctx.measureText(v).width));
-  const outW=Math.min(880,Math.max(410,replyTextW+150));
-  const outH=Math.max(108,replyLines.length*replyLineH+65);
-  const outX=W-outW-25;
-  const outY=Math.min(H-200-outH,bubbleTop+bubbleH+32);
-  ctx.fillStyle=dark?"#005c4b":"#d9fdd3";
-  roundRect(ctx,outX,outY,outW,outH,25,true,false);
-  ctx.beginPath();
-  ctx.moveTo(outX+outW-6,outY+outH-31);
-  ctx.lineTo(outX+outW+18,outY+outH-7);
-  ctx.lineTo(outX+outW-31,outY+outH-12);
-  ctx.closePath();ctx.fill();
-
-  ctx.fillStyle=dark?"#f1f4f5":"#111";
-  ctx.textAlign="left";
-  let ry=outY+48;
-  for(const line of replyLines){ctx.fillText(line,outX+25,ry);ry+=replyLineH;}
-  ctx.fillStyle=dark?"#53bdeb":"#37a95b";
-  ctx.font="26px Arial";ctx.textAlign="right";
-  ctx.fillText(`${formatHour(replyTime)} ✓✓`,outX+outW-20,outY+outH-18);
-
-  // Niente barra di composizione: gli allegati sono ritagliati prima dell'input.
-  return new Promise(resolve=>canvas.toBlob(resolve,"image/png"));
+  return (
+    <svg className="chart" ref={ref} viewBox={`0 0 ${W} ${H}`} onClick={e => onPick(candleFromEvent(e))} onMouseMove={e => onPreview(candleFromEvent(e))} onMouseLeave={() => onPreview(null)}>
+      <rect x="0" y="0" width={W} height={H} rx="16" fill="#08111d" />
+      {[0,1,2,3,4].map(i => {
+        const yy = T + i * (H - T - B) / 4;
+        const val = max - i * range / 4;
+        return <g key={i}><line x1={L} x2={W-R} y1={yy} y2={yy} stroke="#1f2f43" /><text x={W-R-2} y={yy-5} fill="#8ea6bf" fontSize="12" textAnchor="end">{price(val)}</text></g>;
+      })}
+      {visible.map((c, i) => {
+        const x = L + i * step + step / 2;
+        const color = c.close >= c.open ? "#089981" : "#f23645";
+        const bodyY = Math.min(y(c.open), y(c.close));
+        const bodyH = Math.max(2, Math.abs(y(c.close) - y(c.open)));
+        const isSelected = selected && selected.id === c.id;
+        const isPreview = preview && preview.id === c.id;
+        return <g key={c.id}>
+          {isPreview && <rect x={x - step/2} y={T} width={step} height={H-T-B} fill="rgba(59,130,246,0.12)" />}
+          <line x1={x} x2={x} y1={y(c.high)} y2={y(c.low)} stroke={color} strokeWidth="1.2" />
+          <rect x={x - Math.max(2, step * .32)} y={bodyY} width={Math.max(3, step * .64)} height={bodyH} fill={color} />
+          {isSelected && <circle cx={x} cy={y(c.close)} r="7" fill="#2563eb" stroke="#fff" strokeWidth="2" />}
+        </g>;
+      })}
+      {trades.map((t, i) => {
+        const oi = visible.findIndex(c => c.id === t.openCandleId);
+        const ci = visible.findIndex(c => c.id === t.closeCandleId);
+        if (oi < 0 || ci < 0) return null;
+        const x1 = L + oi * step + step / 2, x2 = L + ci * step + step / 2;
+        const y1 = y(t.entry), y2 = y(t.exit);
+        const color = t.side === "buy" ? "#3b82f6" : "#ef4444";
+        return <g key={i}><line x1={x1} y1={y1} x2={x2} y2={y2} stroke={color} strokeWidth="2" /><circle cx={x1} cy={y1} r="6" fill={color} stroke="#fff" /><circle cx={x2} cy={y2} r="6" fill={color} stroke="#fff" /></g>;
+      })}
+      {(preview || selected) && (() => {
+        const mark = preview || selected;
+        const idx = visible.findIndex(c => c.id === mark.id);
+        if (idx < 0) return null;
+        const x = L + idx * step + step / 2;
+        return <g>
+          <line x1={x} x2={x} y1={T} y2={H-B} stroke="#60a5fa" strokeDasharray="5 5" />
+          <rect x={Math.min(x + 12, W - 304)} y={42} width="292" height="138" rx="10" fill="#0f1c2e" stroke="#315d88" />
+          <text x={Math.min(x + 28, W - 288)} y="68" fill="#ffffff" fontSize="14" fontWeight="700">{itDate(mark.time)}</text>
+          <text x={Math.min(x + 28, W - 288)} y="94" fill="#cbd5e1" fontSize="13">Open: {price(mark.open)}</text>
+          <text x={Math.min(x + 28, W - 288)} y="116" fill="#cbd5e1" fontSize="13">High: {price(mark.high)}</text>
+          <text x={Math.min(x + 28, W - 288)} y="138" fill="#cbd5e1" fontSize="13">Low: {price(mark.low)}</text>
+          <text x={Math.min(x + 28, W - 288)} y="160" fill="#cbd5e1" fontSize="13">Close: {price(mark.close)}</text>
+        </g>;
+      })()}
+      <text x={L} y={H-12} fill="#8ea6bf" fontSize="13">Passa sopra una candela per anteprima · clicca per selezionarla</text>
+    </svg>
+  );
 }
 
 function renderReportBlob(trades, layout, tab, deposit, credit, withdrawal) {
-  const totalProfit = trades.reduce((a, t) => a + Number(t.profit || 0), 0);
-  const balance = Number(deposit || 0) + Number(credit || 0) - Number(withdrawal || 0) + totalProfit;
-
-  const isDark = layout.includes("dark");
-  const isAndroid = layout.includes("android");
-  const isMT5 = layout.includes("mt5");
-  const isMT4 = layout.includes("mt4");
-
+  const totalProfit = trades.reduce((a, t) => a + t.profit, 0);
+  const balance = Number(deposit) + Number(credit) - Number(withdrawal) + totalProfit;
   const canvas = document.createElement("canvas");
-  canvas.width = 828;
-  canvas.height = 1792;
+  canvas.width = 828; canvas.height = 1792;
   const ctx = canvas.getContext("2d");
-
-  const bg = isDark ? "#000000" : "#ffffff";
-  const text = isDark ? "#f8f8f8" : "#0b0b0b";
-  const muted = isDark ? "#c9c9c9" : "#5c5c5c";
-  const line = isDark ? "#252525" : "#e7e7e7";
-  const blue = "#2997ff";
-  const red = "#e22b36";
-  const soft = isDark ? "#171717" : "#eeeeee";
-  const soft2 = isDark ? "#3b3b3b" : "#ffffff";
-
-  ctx.fillStyle = bg;
-  ctx.fillRect(0, 0, 828, 1792);
-
-  function drawText(str, x, y, size = 24, weight = "400", color = text, align = "left") {
-    ctx.font = `${weight} ${size}px Arial`;
-    ctx.fillStyle = color;
-    ctx.textAlign = align;
-    ctx.fillText(str, x, y);
-    ctx.textAlign = "left";
-  }
-
-  function lineY(y) {
-    ctx.strokeStyle = line;
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(0, y);
-    ctx.lineTo(828, y);
-    ctx.stroke();
-  }
-
-  function drawStatusBar() {
-    if (isAndroid) {
-      drawText("12:30", 14, 36, 26, "700", isDark ? "#f2f2f2" : "#000");
-      drawText("4G+", 610, 36, 20, "700", isDark ? "#f2f2f2" : "#000");
-      drawText("41%", 760, 36, 22, "700", isDark ? "#f2f2f2" : "#000");
-      return;
-    }
-    drawText(isMT4 ? "15:43" : "12:31", 102, 70, 32, "700", isDark ? "#fff" : "#111");
-    drawText("▮▮▮", 585, 68, 26, "700", isDark ? "#fff" : "#111");
-    drawText(isDark ? "⌁" : "5G", 640, 68, 30, "700", isDark ? "#fff" : "#111");
-    drawText(isDark ? "▰" : "65", 704, 68, 22, "700", isDark ? "#fff" : "#111");
-  }
-
-  function drawTopTabs(y = 120) {
-    if (isAndroid && isDark) return;
-    const x = isDark ? 34 : (isMT4 ? 130 : 34);
-    const w = isDark ? 760 : (isMT4 ? 568 : 760);
-    const h = isDark ? 100 : (isMT4 ? 64 : 52);
-    const r = isDark ? 50 : (isMT4 ? 11 : 9);
-
-    ctx.fillStyle = soft;
-    ctx.strokeStyle = isDark ? "#3c3c3c" : "#d9d9d9";
-    roundRect(ctx, x, y, w, h, r, true, true);
-
-    ["Giorno", "Settimana", "Mese", "Personalizzato"].forEach((name, i) => {
-      const segX = x + i * w / 4;
-      const selectedItalianTab = {
-        Day: "Giorno",
-        Week: "Settimana",
-        Month: "Mese",
-        Custom: "Personalizzato"
-      }[tab] || tab;
-      if (name === selectedItalianTab) {
-        ctx.fillStyle = soft2;
-        roundRect(ctx, segX + (isDark ? 10 : 6), y + (isDark ? 10 : 5), w / 4 - (isDark ? 20 : 12), h - (isDark ? 20 : 10), isDark ? 42 : 8, true, false);
-      }
-      if (isMT4 && !isDark && i > 0) {
-        ctx.strokeStyle = "#d0d0d0";
-        ctx.beginPath();
-        ctx.moveTo(segX, y + 9);
-        ctx.lineTo(segX, y + h - 9);
-        ctx.stroke();
-      }
-      drawText(name, segX + w / 8, y + h / 2 + 11, isMT5 ? 26 : 25, "700", isDark ? "#fff" : "#111", "center");
-    });
-  }
-
-  function drawAndroidHeader() {
-    if (!(isAndroid && isDark)) return;
-    drawText("☰", 28, 76, 30, "400", "#d8d8d8");
-    drawText("Storico", 60, 63, 28, "400", "#e5e5e5");
-    drawText("Tutti i simboli", 60, 100, 20, "400", "#b8b8b8");
-    drawText("$", 730, 83, 22, "700", "#d8d8d8");
-    drawText("↕", 770, 83, 22, "700", "#d8d8d8");
-    drawText("▦", 805, 83, 22, "700", "#d8d8d8", "right");
-    lineY(118);
-  }
-
-  function drawAndroidSummary() {
-    if (!(isAndroid && isDark)) return 260;
-    const y0 = 150;
-    [["Profitto:", totalProfit], ["Deposito:", Number(deposit || 0)], ["Saldo:", balance]].forEach((r, i) => {
-      const y = y0 + i * 36;
-      drawText(r[0], 28, y, 30, "700", "#d0d0d0");
-      ctx.strokeStyle = "#3b3b3b";
-      ctx.setLineDash([2, 6]);
-      ctx.beginPath();
-      ctx.moveTo(160, y - 8);
-      ctx.lineTo(700, y - 8);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      drawText(money(r[1]), 805, y, 30, "700", i === 0 ? blue : "#d0d0d0", "right");
-    });
-    lineY(258);
-    return 300;
-  }
-
-  function drawRows(startY) {
-    const availableBottom = isAndroid && isDark ? 1460 : 1620;
-    const totalRows = trades.length;
-    const baseRowH = isAndroid && isDark ? 116 : (isMT4 ? 132 : 88);
-    const minRowH = isAndroid && isDark ? 82 : (isMT4 ? 92 : 70);
-    const fitRowH = totalRows > 0
-      ? Math.floor((availableBottom - startY) / totalRows)
-      : baseRowH;
-
-    const rowH = Math.max(minRowH, Math.min(baseRowH, fitRowH));
-    const maxRows = Math.max(1, Math.floor((availableBottom - startY) / rowH));
-    const rows = trades.slice(0, maxRows);
-
-    rows.forEach((t, i) => {
-      const y = startY + i * rowH;
-      ctx.fillStyle = bg;
-      ctx.fillRect(0, y, 828, rowH);
-      lineY(y + rowH);
-
-      const sym = "XAUUSD";
-      const sideColor = t.side === "buy" ? blue : red;
-      const profitColor = Number(t.profit) >= 0 ? blue : red;
-      const scale = Math.min(1, rowH / baseRowH);
-
-      if (isAndroid && isDark) {
-        const titleY = y + Math.max(29, 38 * scale);
-        const priceY = y + Math.max(62, 86 * scale);
-        drawText(`${sym}, `, 14, titleY, Math.max(22, 28 * scale), "700", "#d7d7d7");
-        const sw = ctx.measureText(`${sym}, `).width;
-        drawText(`${t.side} ${Number(t.lot).toFixed(2)}`, 14 + sw, titleY, Math.max(22, 28 * scale), "700", sideColor);
-        drawText(`${price(t.entry)} → ${price(t.exit)}`, 14, priceY, Math.max(23, 30 * scale), "400", "#d7d7d7");
-        drawText(reportDate(t.closeTime), 810, titleY, Math.max(20, 27 * scale), "700", "#d0d0d0", "right");
-        drawText(money(t.profit), 810, priceY, Math.max(23, 30 * scale), "700", profitColor, "right");
-        return;
-      }
-
-      const titleY = y + Math.max(28, (isMT4 ? 48 : 34) * scale);
-      const priceY = y + Math.max(58, (isMT4 ? 100 : 67) * scale);
-      const titleSize = Math.max(23, (isMT4 ? 31 : 30) * scale);
-      const priceSize = Math.max(24, (isMT4 ? 33 : 30) * scale);
-      const dateSize = Math.max(19, (isMT4 ? 26 : 22) * scale);
-      const profitSize = Math.max(24, (isMT4 ? 32 : 28) * scale);
-
-      drawText(`${sym}, `, 20, titleY, titleSize, "900", text);
-      const sw = ctx.measureText(`${sym}, `).width;
-      drawText(`${t.side} ${Number(t.lot).toFixed(2)}`, 20 + sw, titleY, titleSize, "900", sideColor);
-      drawText(`${price(t.entry)} → ${price(t.exit)}`, 20, priceY, priceSize, "400", muted);
-      drawText(reportDate(t.closeTime), 810, titleY, dateSize, "700", muted, "right");
-      drawText(money(t.profit), 810, priceY, profitSize, "900", profitColor, "right");
-    });
-
-    return {
-      endY: startY + rows.length * rowH,
-      shownRows: rows.length,
-      totalRows
-    };
-  }
-
-  function drawSummary(rowsInfo) {
-    if (isAndroid && isDark) return false;
-
-    const { endY, shownRows, totalRows } = rowsInfo;
-    const summaryHeight = 250;
-    const summaryBottomLimit = 1620;
-
-    if (shownRows < totalRows || endY + summaryHeight > summaryBottomLimit) {
-      return false;
-    }
-
-    const minY = isMT5 ? 1390 : 1030;
-    const sy = Math.max(endY + 16, minY);
-    lineY(sy - 20);
-
-    [["Profitto:", totalProfit], ["Credito:", Number(credit || 0)], ["Deposito:", Number(deposit || 0)], ["Prelievo:", Number(withdrawal || 0)], ["Saldo:", balance]].forEach((r, i) => {
-      const yy = sy + 38 + i * 42;
-      drawText(r[0], 20, yy, 32, "900", muted);
-      drawText(money(r[1]), 810, yy, 32, "900", muted, "right");
-    });
-
-    return true;
-  }
-
-  function drawBottomNav() {
-    if (isAndroid && isDark) {
-      ctx.fillStyle = "#050505";
-      ctx.fillRect(0, 1585, 828, 207);
-      ctx.fillStyle = "#0b0b0b";
-      ctx.fillRect(0, 1470, 828, 115);
-      ["↙", "▥", "▣", "▰", "▤", "●"].forEach((it, i) => {
-        const x = 80 + i * 135;
-        if (i === 3) {
-          ctx.fillStyle = "#1b1b1b";
-          roundRect(ctx, x - 46, 1500, 92, 60, 30, true, false);
-        }
-        drawText(it, x, 1540, 34, "700", i === 3 ? blue : "#a5a5a5", "center");
-      });
-      drawText("Ⅲ", 190, 1728, 36, "400", "#e5e5e5", "center");
-      drawText("○", 414, 1728, 42, "400", "#e5e5e5", "center");
-      drawText("‹", 650, 1728, 48, "400", "#e5e5e5", "center");
-      return;
-    }
-
-    const y = 1650;
-    lineY(y - 20);
-
-    if (isDark) {
-      ctx.fillStyle = "#151515";
-      roundRect(ctx, 45, y - 5, 738, 110, 55, true, false);
-    } else {
-      ctx.fillStyle = "#fbfbfb";
-      ctx.fillRect(0, y - 10, 828, 140);
-    }
-
-    const items = ["Quotazioni", "Grafico", "Operazioni", "Storico", "Impostazioni"];
-    const icons = ["↗", "▥", "↗", "▰", "⚙"];
-    items.forEach((item, i) => {
-      const x = 70 + i * 172;
-      if (item === "Storico") {
-        ctx.fillStyle = isDark ? "#3a3a3a" : "#dce6ff";
-        roundRect(ctx, x - 58, y + 6, 116, 76, isDark ? 38 : 10, true, false);
-      }
-      drawText(icons[i], x, y + 42, 34, "900", item === "Storico" ? "#0767e8" : "#9a9a9a", "center");
-      drawText(item, x, y + 78, 18, "700", item === "Storico" ? "#0767e8" : "#777", "center");
-    });
-
-    if (!isDark) {
-      ctx.fillStyle = "#000";
-      roundRect(ctx, 275, 1768, 280, 8, 4, true, false);
-    }
-  }
-
-  drawStatusBar();
-  drawAndroidHeader();
-
-  let startY;
-  if (isAndroid && isDark) {
-    startY = drawAndroidSummary();
+  const dark = layout === "dark", compact = layout === "compact";
+  ctx.fillStyle = dark ? "#080808" : "#ffffff"; ctx.fillRect(0,0,828,1792);
+  const blue="#2391f0", red="#e1323c", main=dark?"#fff":"#151515", muted=dark?"#d0d0d0":"#555", grey=dark?"#b0b0b0":"#707070", line=dark?"#2d2d2d":"#e6e6e6";
+  if (dark) {
+    ctx.fillStyle="#161616"; ctx.strokeStyle="#464646"; roundRect(ctx,35,35,758,82,42,true,true);
+    ["Day","Week","Month","Custom"].forEach((t,i)=>{ const x=35+i*758/4; if(t===tab){ctx.fillStyle="#414141";roundRect(ctx,x+8,43,758/4-16,66,36,true,false)} ctx.fillStyle="#fff"; ctx.font="700 32px Arial"; ctx.fillText(t,x+758/8-ctx.measureText(t).width/2,89);});
   } else {
-    drawTopTabs(isDark ? 120 : (isMT4 ? 128 : 120));
-    startY = isDark ? 240 : (isMT4 ? 208 : 195);
+    ctx.fillStyle="#eee"; ctx.strokeStyle="#ddd"; roundRect(ctx,95,24,618,66,8,true,true);
+    ["Day","Week","Month","Custom"].forEach((t,i)=>{ const x=95+i*618/4; if(t===tab){ctx.fillStyle="#fff";roundRect(ctx,x+4,28,618/4-8,58,6,true,false)} ctx.fillStyle="#151515"; ctx.font="700 30px Arial"; ctx.fillText(t,x+618/8-ctx.measureText(t).width/2,67);});
   }
-
-  const rowsInfo = drawRows(startY);
-  drawSummary(rowsInfo);
-  drawBottomNav();
-
+  const top=dark?150:118, rowH=compact?96:(dark?106:116), maxRows=compact?11:(dark?10:9);
+  trades.slice(0,maxRows).forEach((t,i)=>{ const y=top+i*rowH; ctx.strokeStyle=line; ctx.beginPath(); ctx.moveTo(0,y+rowH-2); ctx.lineTo(828,y+rowH-2); ctx.stroke(); ctx.font="700 32px Arial"; ctx.fillStyle=main; ctx.fillText("XAUUSD, ",20,y+(dark?34:40)); const bw=ctx.measureText("XAUUSD, ").width; ctx.fillStyle=t.side==="buy"?blue:red; ctx.fillText(`${t.side} ${t.lot.toFixed(2)}`,20+bw,y+(dark?34:40)); ctx.font="28px Arial"; ctx.fillStyle=muted; ctx.fillText(`${price(t.entry)} → ${price(t.exit)}`,20,y+(dark?78:86)); ctx.font="700 26px Arial"; const dt=reportDate(t.closeTime); ctx.fillText(dt,808-ctx.measureText(dt).width,y+(dark?42:46)); ctx.font="700 32px Arial"; const pp=money(t.profit); ctx.fillStyle=t.profit>=0?blue:red; ctx.fillText(pp,808-ctx.measureText(pp).width,y+(dark?84:92));});
+  const sy=1792-315; ctx.strokeStyle=line; ctx.beginPath(); ctx.moveTo(0,sy); ctx.lineTo(828,sy); ctx.stroke();
+  [["Profit:",totalProfit],["Credit:",Number(credit)],["Deposit:",Number(deposit)],["Withdrawal:",Number(withdrawal)],["Balance:",balance]].forEach((r,i)=>{ const y=sy+50+i*40; ctx.font="700 32px Arial"; ctx.fillStyle=grey; ctx.fillText(r[0],20,y); const val=money(r[1]); ctx.fillText(val,798-ctx.measureText(val).width,y);});
   return new Promise(resolve => canvas.toBlob(resolve, "image/png"));
 }
 
 export default function LucaTradingAuto() {
   const [candles, setCandles] = useState([]);
+  const [selected, setSelected] = useState(null);
+  const [preview, setPreview] = useState(null);
   const [trades, setTrades] = useState([]);
   const [autoSets, setAutoSets] = useState([]);
-  const [usedCandleKeys, setUsedCandleKeys] = useState([]);
 
-  const [telegramScreenFile, setTelegramScreenFile] = useState(null);
-  const [telegramAvatarFile, setTelegramAvatarFile] = useState(null);
-  const [telegramBackgroundFile, setTelegramBackgroundFile] = useState(null);
-  const [telegramUnreadCount, setTelegramUnreadCount] = useState("15");
-  const [telegramPrivacyMask, setTelegramPrivacyMask] = useState(true);
-  const [telegramMode, setTelegramMode] = useState("daily");
-  const [telegramTheme, setTelegramTheme] = useState("light");
-  const [telegramName, setTelegramName] = useState("");
-  const [telegramGender, setTelegramGender] = useState("auto");
-  const [telegramMessage, setTelegramMessage] = useState("");
-  const [telegramReply, setTelegramReply] = useState("");
-
-  const [layout, setLayout] = useState("ios_mt5_white");
-  const [tab, setTab] = useState("Week");
+  const [layout, setLayout] = useState("white");
+  const [tab, setTab] = useState("Day");
   const [pointValue, setPointValue] = useState(100);
   const [deposit, setDeposit] = useState(0);
   const [credit, setCredit] = useState(0);
   const [withdrawal, setWithdrawal] = useState(0);
 
-  const [dayFrom, setDayFrom] = useState("");
-  const [dayTo, setDayTo] = useState("");
+  const [side, setSide] = useState("buy");
+  const [lot, setLot] = useState(0.08);
+  const [entryIndex, setEntryIndex] = useState(0);
+  const [exitIndex, setExitIndex] = useState(0);
+  const [entryPrice, setEntryPrice] = useState("");
+  const [exitPrice, setExitPrice] = useState("");
+  const [entrySecond, setEntrySecond] = useState(17);
+  const [exitSecond, setExitSecond] = useState(43);
+
+  const [screenCount, setScreenCount] = useState(5);
+  const [autoPositive, setAutoPositive] = useState(5);
+  const [autoNegative, setAutoNegative] = useState(1);
+  const [profitMin, setProfitMin] = useState(150);
+  const [profitMax, setProfitMax] = useState(400);
+  const [lotMin, setLotMin] = useState(0.05);
+  const [lotMax, setLotMax] = useState(0.20);
   const [startHour, setStartHour] = useState("08:00");
   const [endHour, setEndHour] = useState("22:00");
 
-  const [screenCount, setScreenCount] = useState(1);
-  const [autoPositive, setAutoPositive] = useState(3);
-  const [autoNegative, setAutoNegative] = useState(0);
-  const [profitMin, setProfitMin] = useState(100);
-  const [profitMax, setProfitMax] = useState(300);
-  const [lotMin, setLotMin] = useState(0.02);
-  const [lotMax, setLotMax] = useState(0.10);
-
-  const [scenario1Side, setScenario1Side] = useState("auto");
-  const [scenario1Open, setScenario1Open] = useState("");
-  const [scenario1Close, setScenario1Close] = useState("");
-
-  const [scenario2Side, setScenario2Side] = useState("auto");
-  const [scenario2Open, setScenario2Open] = useState("");
-  const [scenario2Close, setScenario2Close] = useState("");
-
-  const [scenario3Side, setScenario3Side] = useState("auto");
-  const [scenario3Open, setScenario3Open] = useState("");
-  const [scenario3Close, setScenario3Close] = useState("");
-
-  const totalProfit = useMemo(() => trades.reduce((a, t) => a + Number(t.profit || 0), 0), [trades]);
-
-  useEffect(() => {
-    const refreshUsedCandles = () => {
-      setUsedCandleKeys(Array.from(readUsedCandlesToday()));
-    };
-
-    refreshUsedCandles();
-
-    // Se la pagina resta aperta oltre la mezzanotte, passa automaticamente
-    // al nuovo archivio giornaliero senza richiedere il refresh.
-    const timer = window.setInterval(refreshUsedCandles, 60_000);
-    return () => window.clearInterval(timer);
-  }, []);
-
-  const usedCandleSet = useMemo(
-    () => new Set(usedCandleKeys),
-    [usedCandleKeys]
-  );
-
-  const dayOptions = useMemo(() => {
-    const map = new Map();
-    candles.forEach(c => {
-      const key = dayKey(c.time);
-      if (!map.has(key)) map.set(key, { key, label: dayLabel(c.time) });
-    });
-    return Array.from(map.values()).sort((a, b) => a.key.localeCompare(b.key));
-  }, [candles]);
-
-  const selectedFrom = dayFrom || dayOptions[0]?.key || "";
-  const selectedTo = dayTo || dayOptions.at(-1)?.key || "";
-
-  const selectedDayKeys = useMemo(() => {
-    const from = selectedFrom <= selectedTo ? selectedFrom : selectedTo;
-    const to = selectedFrom <= selectedTo ? selectedTo : selectedFrom;
-    return dayOptions.map(d => d.key).filter(k => k >= from && k <= to);
-  }, [dayOptions, selectedFrom, selectedTo]);
-
-  const selectedCandles = useMemo(() => {
-    if (!selectedDayKeys.length) return candles;
-    const set = new Set(selectedDayKeys);
-    return candles.filter(c => set.has(dayKey(c.time)));
-  }, [candles, selectedDayKeys]);
+  const totalProfit = useMemo(() => trades.reduce((a, t) => a + t.profit, 0), [trades]);
+  const activeCandle = preview || selected;
+  const entry = candles[entryIndex];
+  const exit = candles[exitIndex];
 
   function loadCSV(file) {
-    if (file.name.toLowerCase().endsWith(".numbers")) {
-      alert("Il file .numbers non può essere letto direttamente dal browser/Vercel. Aprilo con Numbers e fai: File > Esporta in > CSV. Poi carica qui il CSV esportato. Il formato con time tipo 2026-07-02T19:57:00+02:00 è già supportato.");
-      return;
-    }
     Papa.parse(file, {
       header: true,
       skipEmptyLines: true,
       complete: res => {
         const rows = res.data.filter(Boolean);
-        if (!rows.length) return alert("CSV vuoto.");
-
+        if (!rows.length) return alert("CSV vuoto");
         const h = {
-          time: findHeader(rows[0], ["time", "datetime", "date", "data", "timestamp", "time utc", "time (utc)", "ora", "data ora"]),
-          open: findHeader(rows[0], ["open", "apertura", "o", "otwarcie"]),
-          high: findHeader(rows[0], ["high", "massimo", "max", "h", "najwyzszy", "najwyższy"]),
-          low: findHeader(rows[0], ["low", "minimo", "min", "l", "najnizszy", "najniższy"]),
-          close: findHeader(rows[0], ["close", "chiusura", "c", "zamkniecie", "zamknięcie"]),
-          volume: findHeader(rows[0], ["volume", "vol", "tick volume", "volume ", "vol."])
+          time: findHeader(rows[0], ["time","datetime","date","data","timestamp","time utc","time (utc)"]),
+          open: findHeader(rows[0], ["open","apertura","otwarcie"]),
+          high: findHeader(rows[0], ["high","massimo","max","najwyzszy","najwyższy"]),
+          low: findHeader(rows[0], ["low","minimo","min","najnizszy","najniższy"]),
+          close: findHeader(rows[0], ["close","chiusura","zamkniecie","zamknięcie"]),
+          volume: findHeader(rows[0], ["volume","vol","tick volume"])
         };
-
-        if (!h.time || !h.open || !h.high || !h.low || !h.close) {
-          return alert("CSV non valido. Servono colonne time, open, high, low, close.");
-        }
+        if (!h.time || !h.open || !h.high || !h.low || !h.close) return alert("CSV non valido. Servono time/open/high/low/close o equivalenti TradingView.");
 
         const parsed = rows.map((r, index) => {
           const t = parseDate(r[h.time]);
           return {
             id: `row_${index}`,
-            rowIndex: index + 1,
+            rowIndex: index,
             rawTime: String(r[h.time]),
             time: t,
+            timeKey: t ? timeKeyIT(t) : "",
             open: toNum(r[h.open]),
             high: toNum(r[h.high]),
             low: toNum(r[h.low]),
@@ -1000,563 +292,212 @@ export default function LucaTradingAuto() {
             volume: h.volume ? toNum(r[h.volume]) : 0
           };
         })
-        .filter(c => c.time && ![c.open, c.high, c.low, c.close].some(Number.isNaN))
-        .sort((a, b) => a.time - b.time);
+        .filter(c => c.time && ![c.open,c.high,c.low,c.close].some(Number.isNaN))
+        .sort((a,b) => a.time - b.time);
 
-        const days = Array.from(new Set(parsed.map(c => dayKey(c.time)))).sort();
         setCandles(parsed);
-        setDayFrom(days[0] || "");
-        setDayTo(days.at(-1) || "");
         setTrades([]);
+        setSelected(null);
+        setPreview(null);
         setAutoSets([]);
+        setEntryIndex(0);
+        setExitIndex(Math.min(1, parsed.length - 1));
+        setEntryPrice(parsed[0]?.open.toFixed(3) || "");
+        setExitPrice(parsed[1]?.close.toFixed(3) || parsed[0]?.close.toFixed(3) || "");
       }
     });
   }
 
-  function scenarios() {
-    return [
-      { side: scenario1Side, open: scenario1Open, close: scenario1Close },
-      { side: scenario2Side, open: scenario2Open, close: scenario2Close },
-      { side: scenario3Side, open: scenario3Open, close: scenario3Close }
-    ].map(s => ({
-      side: s.side,
-      open: String(s.open).trim() === "" ? null : Number(String(s.open).replace(",", ".")),
-      close: String(s.close).trim() === "" ? null : Number(String(s.close).replace(",", "."))
-    }));
+  function setCandleAsEntry(c) {
+    if (!c) return;
+    const idx = candles.findIndex(x => x.id === c.id);
+    if (idx >= 0) { setEntryIndex(idx); setEntryPrice(candles[idx].open.toFixed(3)); }
   }
 
-  function validTimePool(day) {
-    const [sh, sm] = String(startHour || "00:00").split(":").map(Number);
-    const [eh, em] = String(endHour || "23:59").split(":").map(Number);
+  function setCandleAsExit(c) {
+    if (!c) return;
+    const idx = candles.findIndex(x => x.id === c.id);
+    if (idx >= 0) { setExitIndex(idx); setExitPrice(candles[idx].close.toFixed(3)); }
+  }
+
+  function addTrade() {
+    if (!entry || !exit) return alert("Carica prima un CSV.");
+    const ep = Number(entryPrice), xp = Number(exitPrice), l = Number(lot);
+    if (Number.isNaN(ep) || ep < entry.low || ep > entry.high) return alert(`Prezzo apertura fuori dalla candela: ${price(entry.low)} - ${price(entry.high)}`);
+    if (Number.isNaN(xp) || xp < exit.low || xp > exit.high) return alert(`Prezzo chiusura fuori dalla candela: ${price(exit.low)} - ${price(exit.high)}`);
+    const ot = setSecond(entry.time, Number(entrySecond || 0));
+    const ct = setSecond(exit.time, Number(exitSecond || 0));
+    setTrades([...trades, {
+      side,
+      lot: l,
+      openCandleId: entry.id,
+      closeCandleId: exit.id,
+      openTime: ot,
+      closeTime: ct,
+      entry: ep,
+      exit: xp,
+      profit: pnl(side, ep, xp, l, Number(pointValue))
+    }]);
+  }
+
+  function filteredCandles() {
+    const [sh, sm] = startHour.split(":").map(Number);
+    const [eh, em] = endHour.split(":").map(Number);
     return candles.filter(c => {
-      if (dayKey(c.time) !== day) return false;
-      const p = partsIT(c.time);
+      const p = new Intl.DateTimeFormat("it-IT", { timeZone: TZ, hour: "2-digit", minute: "2-digit", hour12: false }).formatToParts(c.time).reduce((a,x)=>{a[x.type]=x.value;return a;},{});
       const m = Number(p.hour) * 60 + Number(p.minute);
       return m >= sh * 60 + sm && m <= eh * 60 + em;
     });
   }
 
-  function buildTrade(wantPositive, pool, sc, reservedKeys = new Set()) {
-    const openTarget = sc?.open !== null && !Number.isNaN(sc?.open) ? sc.open : null;
-    const closeTarget = sc?.close !== null && !Number.isNaN(sc?.close) ? sc.close : null;
+  function makeTrade(wantPositive, pool) {
+    for (let tries = 0; tries < 800; tries++) {
+      const a = randInt(0, pool.length - 2);
+      const b = randInt(a + 1, pool.length - 1);
+      const c1 = pool[a];
+      const c2 = pool[b];
+      const l = Number(rand(Number(lotMin), Number(lotMax)).toFixed(2));
+      const direction = Math.random() > 0.5 ? "buy" : "sell";
 
-    const availablePool = pool.filter(c => !reservedKeys.has(candleSignature(c)));
-    if (availablePool.length < 2) return null;
-
-    for (let tries = 0; tries < 900; tries++) {
-      let openPick;
-      let closePick;
-
-      // Regola fondamentale:
-      // i prezzi generati sono SEMPRE valori reali presi dal CSV: open/high/low/close della candela.
-      // Se compili uno scenario, quel valore viene usato solo come riferimento:
-      // l'app prende il valore OHLC reale più vicino nel CSV.
-      if (openTarget !== null) {
-        openPick = pickCandleNear(availablePool, openTarget, 0, availablePool.length - 2);
+      let entryP, exitP;
+      if (wantPositive) {
+        if (direction === "buy") {
+          entryP = rand(c1.low, c1.high);
+          exitP = rand(Math.max(c2.low, entryP + 0.001), c2.high);
+        } else {
+          entryP = rand(c1.low, c1.high);
+          exitP = rand(c2.low, Math.min(c2.high, entryP - 0.001));
+        }
       } else {
-        const a = randInt(0, availablePool.length - 2);
-        const c1 = availablePool[a];
-        const v1 = choose(ohlcValues(c1));
-        openPick = { index: a, candle: c1, value: v1.value, source: v1.label };
+        if (direction === "buy") {
+          entryP = rand(c1.low, c1.high);
+          exitP = rand(c2.low, Math.min(c2.high, entryP - 0.001));
+        } else {
+          entryP = rand(c1.low, c1.high);
+          exitP = rand(Math.max(c2.low, entryP + 0.001), c2.high);
+        }
       }
 
-      if (!openPick) continue;
-
-      if (closeTarget !== null) {
-        closePick = pickCandleNear(availablePool, closeTarget, openPick.index + 1, availablePool.length - 1);
-      } else {
-        const b = randInt(openPick.index + 1, availablePool.length - 1);
-        const c2 = availablePool[b];
-        const v2 = choose(ohlcValues(c2));
-        closePick = { index: b, candle: c2, value: v2.value, source: v2.label };
-      }
-
-      if (!closePick) continue;
-
-      const entry = Number(openPick.value);
-      const exit = Number(closePick.value);
-
-      let side = sc?.side && sc.side !== "auto" ? sc.side : null;
-      if (!side) {
-        side = wantPositive
-          ? (exit >= entry ? "buy" : "sell")
-          : (exit >= entry ? "sell" : "buy");
-      }
-
-      const lot = Number(rand(Number(lotMin), Number(lotMax)).toFixed(2));
-      const profit = Number(pnl(side, entry, exit, lot, Number(pointValue)).toFixed(2));
-
-      if (wantPositive && profit <= 0) continue;
-      if (!wantPositive && profit >= 0) continue;
-
-      reservedKeys.add(candleSignature(openPick.candle));
-      reservedKeys.add(candleSignature(closePick.candle));
+      if (Number.isNaN(entryP) || Number.isNaN(exitP)) continue;
+      entryP = clamp(entryP, c1.low, c1.high);
+      exitP = clamp(exitP, c2.low, c2.high);
+      const p = pnl(direction, entryP, exitP, l, Number(pointValue));
+      if (wantPositive && p <= 0) continue;
+      if (!wantPositive && p >= 0) continue;
 
       return {
-        side,
-        lot,
-        openCandleId: openPick.candle.id,
-        closeCandleId: closePick.candle.id,
-        openTime: withRandomSecond(openPick.candle.time),
-        closeTime: withRandomSecond(closePick.candle.time),
-        entry: Number(entry.toFixed(2)),
-        exit: Number(exit.toFixed(2)),
-        entrySource: openPick.source,
-        exitSource: closePick.source,
-        profit
+        side: direction,
+        lot: l,
+        openCandleId: c1.id,
+        closeCandleId: c2.id,
+        openTime: setSecond(c1.time, randInt(0, 59)),
+        closeTime: setSecond(c2.time, randInt(0, 59)),
+        entry: Number(entryP.toFixed(3)),
+        exit: Number(exitP.toFixed(3)),
+        profit: Number(p.toFixed(2))
       };
     }
     return null;
   }
 
   function generateAuto() {
-    if (!candles.length) return alert("Carica prima il CSV.");
-    const dayKeys = selectedDayKeys.length ? selectedDayKeys : dayOptions.map(d => d.key);
-    if (!dayKeys.length) return alert("Nessun giorno selezionato.");
-
-    const scs = scenarios();
+    const pool = filteredCandles();
+    if (pool.length < 5) return alert("Servono più candele nel range selezionato.");
     const created = [];
-    const confirmedUsed = new Set(usedCandleSet);
 
-    for (let s = 0; s < Number(screenCount || 1); s++) {
+    for (let s = 0; s < Number(screenCount); s++) {
       let best = null;
-
-      for (let attempt = 0; attempt < 600; attempt++) {
+      for (let attempt = 0; attempt < 500; attempt++) {
         const arr = [];
-        let scenarioCursor = 0;
-        const attemptUsed = new Set(confirmedUsed);
-
-        for (const day of dayKeys) {
-          const pool = validTimePool(day);
-          if (pool.length < 5) continue;
-
-          for (let i = 0; i < Number(autoPositive || 0); i++) {
-            const sc = scs[scenarioCursor++ % scs.length];
-            const t = buildTrade(true, pool, sc, attemptUsed);
-            if (t) arr.push(t);
-          }
-
-          for (let i = 0; i < Number(autoNegative || 0); i++) {
-            const sc = scs[scenarioCursor++ % scs.length];
-            const t = buildTrade(false, pool, sc, attemptUsed);
-            if (t) arr.push(t);
-          }
+        for (let i = 0; i < Number(autoPositive); i++) {
+          const t = makeTrade(true, pool);
+          if (t) arr.push(t);
         }
-
-        arr.sort((a, b) => new Date(a.closeTime).getTime() - new Date(b.closeTime).getTime());
-        const total = arr.reduce((a, t) => a + t.profit, 0);
-
-        if (arr.length && total >= Number(profitMin) && total <= Number(profitMax)) {
+        for (let i = 0; i < Number(autoNegative); i++) {
+          const t = makeTrade(false, pool);
+          if (t) arr.push(t);
+        }
+        arr.sort((a,b) => a.closeTime - b.closeTime);
+        const total = arr.reduce((a,t)=>a+t.profit,0);
+        if (total >= Number(profitMin) && total <= Number(profitMax)) {
           best = arr;
-
-          arr.forEach(t => {
-            const openCandle = candles.find(c => c.id === t.openCandleId);
-            const closeCandle = candles.find(c => c.id === t.closeCandleId);
-            if (openCandle) confirmedUsed.add(candleSignature(openCandle));
-            if (closeCandle) confirmedUsed.add(candleSignature(closeCandle));
-          });
-
           break;
         }
       }
-
-      if (best) created.push({ name: `screen_${String(s + 1).padStart(2, "0")}`, trades: best });
+      if (best) created.push({ name: `screen_${String(s+1).padStart(2,"0")}`, trades: best });
     }
 
     if (!created.length) {
-      alert("Non riesco con questi vincoli oppure le candele nuove disponibili per oggi non sono sufficienti. Le candele già usate restano escluse anche dopo refresh o cambio CSV.");
+      alert("Non sono riuscito a creare screen con quei vincoli. Allarga profitto min/max o aumenta range/lotti.");
       return;
     }
-
-    saveUsedCandlesToday(confirmedUsed);
-    setUsedCandleKeys(Array.from(confirmedUsed));
-
     setAutoSets(created);
-    setTrades([...created[0].trades].sort((a, b) => new Date(a.closeTime).getTime() - new Date(b.closeTime).getTime()));
-  }
-
-  function sortByCloseTime() {
-    setTrades(prev => [...prev].sort(
-      (a, b) => new Date(a.closeTime).getTime() - new Date(b.closeTime).getTime()
-    ));
-  }
-
-  function moveTrade(index, direction) {
-    setTrades(prev => {
-      const target = index + direction;
-      if (target < 0 || target >= prev.length) return prev;
-
-      const next = [...prev];
-      [next[index], next[target]] = [next[target], next[index]];
-      return next;
-    });
-  }
-
-  function updateTrade(index, field, value) {
-    setTrades(prev => prev.map((t, i) => {
-      if (i !== index) return t;
-      const u = { ...t };
-
-      if (field === "side") u.side = value;
-      if (field === "lot") u.lot = toNum(value);
-      if (field === "entry") u.entry = toNum(value);
-      if (field === "exit") u.exit = toNum(value);
-      if (field === "openDate") u.openTime = dateFromInputs(value, htmlTime(t.openTime));
-      if (field === "openTime") u.openTime = dateFromInputs(htmlDate(t.openTime), value);
-      if (field === "closeDate") u.closeTime = dateFromInputs(value, htmlTime(t.closeTime));
-      if (field === "closeTime") u.closeTime = dateFromInputs(htmlDate(t.closeTime), value);
-
-      u.profit = Number(pnl(u.side, u.entry, u.exit, u.lot, Number(pointValue)).toFixed(2));
-      return u;
-    }).sort((a, b) => new Date(a.closeTime).getTime() - new Date(b.closeTime).getTime()));
-  }
-
-  async function screenshot() {
-    if (!trades.length) return alert("Prima genera o aggiungi almeno una operazione.");
-    const blob = await renderReportBlob(trades, layout, tab, deposit, credit, withdrawal);
-    downloadBlob(blob, "luca_trading_report.png");
+    setTrades(created[0].trades);
   }
 
   async function downloadAutoZip() {
-    if (!autoSets.length) return alert("Genera prima gli screen.");
+    if (!autoSets.length) return alert("Genera prima gli screen automatici.");
     const zip = new JSZip();
-    const rows = ["screen,side,lot,open_time,entry,close_time,exit,profit"];
-
+    let allRows = ["screen,side,lot,open_time,entry,close_time,exit,profit"];
     for (const set of autoSets) {
-      const orderedSet = [...set.trades].sort(
-        (a, b) => new Date(a.closeTime).getTime() - new Date(b.closeTime).getTime()
-      );
-      const blob = await renderReportBlob(orderedSet, layout, tab, deposit, credit, withdrawal);
+      const blob = await renderReportBlob(set.trades, layout, tab, deposit, credit, withdrawal);
       zip.file(`${set.name}.png`, blob);
-      orderedSet.forEach(t => {
-        rows.push(`${set.name},${t.side},${Number(t.lot).toFixed(2)},${itDate(t.openTime)},${price(t.entry)},${itDate(t.closeTime)},${price(t.exit)},${Number(t.profit).toFixed(2)}`);
+      set.trades.forEach(t => {
+        allRows.push(`${set.name},${t.side},${t.lot.toFixed(2)},${itDate(t.openTime)},${price(t.entry)},${itDate(t.closeTime)},${price(t.exit)},${t.profit.toFixed(2)}`);
       });
     }
-
-    zip.file("operazioni_generate.csv", rows.join("\n"));
+    zip.file("operazioni_generate.csv", allRows.join("\n"));
     const content = await zip.generateAsync({ type: "blob" });
-    downloadBlob(content, "luca_trading_reports.zip");
+    downloadBlob(content, "luca_trading_auto_reports.zip");
   }
 
-  function addBlankTrade() {
-    const available = selectedCandles.filter(
-      c => !usedCandleSet.has(candleSignature(c))
-    );
-
-    const base = available[0];
-    const next = available[1];
-
-    if (!base || !next) {
-      return alert("Non ci sono almeno due candele nuove disponibili per oggi.");
-    }
-
-    const side = "buy";
-    const lot = 0.050;
-    const entry = base.open;
-    const exit = next.close;
-
-    const updatedUsed = new Set(usedCandleSet);
-    updatedUsed.add(candleSignature(base));
-    updatedUsed.add(candleSignature(next));
-    saveUsedCandlesToday(updatedUsed);
-    setUsedCandleKeys(Array.from(updatedUsed));
-
-    setTrades(prev => [...prev, {
-      side,
-      lot,
-      openCandleId: base.id,
-      closeCandleId: next.id,
-      openTime: withRandomSecond(base.time),
-      closeTime: withRandomSecond(next.time),
-      entry,
-      exit,
-      entrySource: "open",
-      exitSource: "close",
-      profit: Number(pnl(side, entry, exit, lot, Number(pointValue)).toFixed(2))
-    }].sort((a, b) => new Date(a.closeTime).getTime() - new Date(b.closeTime).getTime()));
-  }
-
-  function resetTelegramHistory() {
-    if (typeof window !== "undefined") {
-      window.localStorage.removeItem(telegramStorageKey());
-    }
-    alert("Archivio demo Telegram azzerato.");
-  }
-
-  async function generateTelegramImage() {
-    if (!telegramScreenFile) {
-      return alert("Carica prima lo screenshot.");
-    }
-
-    if (!telegramAvatarFile) {
-      return alert("Carica una foto profilo: così non verrà più generata l'icona con l'iniziale.");
-    }
-
-    const history = readTelegramHistory();
-    const gender = telegramGender === "auto"
-      ? (history.lastGender === "male" ? "female" : "male")
-      : telegramGender;
-
-    const selectedName = telegramName.trim() || randomFromUnused(TELEGRAM_NAMES[gender], history.names);
-    const selectedMessage = telegramMessage.trim() || randomFromUnused(TELEGRAM_PHRASES[gender], history.phrases);
-    const replyTemplate = telegramReply.trim() || randomFromUnused(TELEGRAM_REPLIES[gender], history.replies);
-    const selectedReply = replyTemplate.replace("{name}", selectedName);
-
-    let messageTime;
-    if (telegramMode === "weekly") {
-      messageTime = weeklyMessageTime();
-    } else {
-      if (!trades.length) {
-        return alert("Per il giornaliero servono operazioni presenti.");
-      }
-      const lastClose = [...trades].map(t => new Date(t.closeTime)).sort((a, b) => b - a)[0];
-      messageTime = addMinutes(lastClose, randInt(5, 40));
-    }
-
-    const replyTime = addMinutes(messageTime, randInt(7, 45));
-
-    const blob = await renderTelegramDemo({
-      screenshotFile: telegramScreenFile,
-      avatarFile: telegramAvatarFile,
-      backgroundFile: telegramBackgroundFile,
-      unreadCount: telegramUnreadCount,
-      privacyMask: telegramPrivacyMask,
-      name: selectedName,
-      message: selectedMessage,
-      reply: selectedReply,
-      messageTime,
-      replyTime,
-      mode: telegramMode,
-      theme: telegramTheme
-    });
-
-    downloadBlob(blob, `telegram_demo_${selectedName.toLowerCase()}.png`);
-
-    saveTelegramHistory({
-      phrases: [...history.phrases, selectedMessage],
-      replies: [...history.replies, replyTemplate],
-      names: [...history.names, selectedName],
-      lastGender: gender
-    });
-
-    setTelegramName(selectedName);
-    setTelegramGender(gender);
-    setTelegramMessage(selectedMessage);
-    setTelegramReply(selectedReply);
+  async function screenshot() {
+    const blob = await renderReportBlob(trades, layout, tab, deposit, credit, withdrawal);
+    downloadBlob(blob, "luca_trading_xauusd_report.png");
   }
 
   return (
     <main className="page">
       <header className="top">
-        <div>
-          <h1>🥇 Luca Trading Definitivo</h1>
-          <p>1) Settaggi sopra · 2) Operazioni sotto · 3) Screenshot finale.</p>
-        </div>
-        <button className="primary" onClick={screenshot}>Scarica screenshot</button>
+        <div><h1>🥇 Luca Trading Auto</h1><p>CSV TradingView/OANDA corretto su timestamp UNIX UTC, 3 decimali, anteprima candela e generazione automatica.</p></div>
+        <button className="primary" onClick={screenshot}>Scarica screen attuale</button>
       </header>
-
-      <section className="panel">
-        <h2>1. Settaggi</h2>
-        <div className="grid">
-          <label>CSV TradingView/OANDA/Numbers<input type="file" accept=".csv,.txt,.tsv,.numbers" onChange={e => e.target.files?.[0] && loadCSV(e.target.files[0])}/></label>
-          <label>Layout<select value={layout} onChange={e => setLayout(e.target.value)}><option value="ios_mt5_white">iOS MT5 bianco</option><option value="ios_mt5_dark">iOS MT5 nero</option><option value="ios_mt4_white">iOS MT4 bianco</option><option value="ios_mt4_dark">iOS MT4 nero</option><option value="android_mt4_white">Android MT4 bianco</option><option value="android_mt4_dark">Android MT4 nero</option></select></label>
-          <label>Periodo nello screen<select value={tab} onChange={e => setTab(e.target.value)}><option value="Day">Giorno</option><option value="Week">Settimana</option><option value="Month">Mese</option><option value="Custom">Personalizzato</option></select></label>
-          <label>Valore punto 1 lotto<input type="number" value={pointValue} onChange={e => setPointValue(e.target.value)}/></label>
-          <label>Deposit<input type="number" value={deposit} onChange={e => setDeposit(e.target.value)}/></label>
-          <label>Credit<input type="number" value={credit} onChange={e => setCredit(e.target.value)}/></label>
-          <label>Withdrawal<input type="number" value={withdrawal} onChange={e => setWithdrawal(e.target.value)}/></label>
-        </div>
-
-        <h3>Periodo</h3>
-        <div className="grid">
-          <label>Giorno da<select value={selectedFrom} onChange={e => setDayFrom(e.target.value)}>{dayOptions.map(d => <option key={d.key} value={d.key}>{d.label}</option>)}</select></label>
-          <label>Giorno a<select value={selectedTo} onChange={e => setDayTo(e.target.value)}>{dayOptions.map(d => <option key={d.key} value={d.key}>{d.label}</option>)}</select></label>
-          <label>Ora inizio<input value={startHour} onChange={e => setStartHour(e.target.value)} placeholder="09:30"/></label>
-          <label>Ora fine<input value={endHour} onChange={e => setEndHour(e.target.value)} placeholder="18:45"/></label>
-        </div>
-
-        <h3>Generazione</h3>
-        <div className="grid">
-          <label>Numero screen<input type="number" value={screenCount} onChange={e => setScreenCount(e.target.value)}/></label>
-          <label>Positive per giorno<input type="number" value={autoPositive} onChange={e => setAutoPositive(e.target.value)}/></label>
-          <label>Negative per giorno<input type="number" value={autoNegative} onChange={e => setAutoNegative(e.target.value)}/></label>
-          <label>Profitto totale min<input type="number" value={profitMin} onChange={e => setProfitMin(e.target.value)}/></label>
-          <label>Profitto totale max<input type="number" value={profitMax} onChange={e => setProfitMax(e.target.value)}/></label>
-          <label>Lotto min<input type="number" step="0.01" value={lotMin} onChange={e => setLotMin(e.target.value)}/></label>
-          <label>Lotto max<input type="number" step="0.01" value={lotMax} onChange={e => setLotMax(e.target.value)}/></label>
-        </div>
-
-        <h3>3 scenari opzionali</h3>
-        <p className="hint">Lascia vuoto ciò che vuoi automatico. Se scrivi un prezzo, l’app prende dal CSV il valore reale OHLC più vicino: open, high, low o close.</p>
-        <div className="scenario-grid">
-          <b>Scenario</b><b>Tipo</b><b>Apertura</b><b>Chiusura</b>
-          <span>1</span><select value={scenario1Side} onChange={e => setScenario1Side(e.target.value)}><option value="auto">Automatico</option><option value="buy">BUY</option><option value="sell">SELL</option></select><input type="number" step="0.01" value={scenario1Open} onChange={e => setScenario1Open(e.target.value)} placeholder="automatico"/><input type="number" step="0.01" value={scenario1Close} onChange={e => setScenario1Close(e.target.value)} placeholder="automatico"/>
-          <span>2</span><select value={scenario2Side} onChange={e => setScenario2Side(e.target.value)}><option value="auto">Automatico</option><option value="buy">BUY</option><option value="sell">SELL</option></select><input type="number" step="0.01" value={scenario2Open} onChange={e => setScenario2Open(e.target.value)} placeholder="automatico"/><input type="number" step="0.01" value={scenario2Close} onChange={e => setScenario2Close(e.target.value)} placeholder="automatico"/>
-          <span>3</span><select value={scenario3Side} onChange={e => setScenario3Side(e.target.value)}><option value="auto">Automatico</option><option value="buy">BUY</option><option value="sell">SELL</option></select><input type="number" step="0.01" value={scenario3Open} onChange={e => setScenario3Open(e.target.value)} placeholder="automatico"/><input type="number" step="0.01" value={scenario3Close} onChange={e => setScenario3Close(e.target.value)} placeholder="automatico"/>
-        </div>
-
-        <div className="actions">
-          <button className="primary" onClick={generateAuto}>Genera operazioni</button>
-          <button onClick={addBlankTrade}>Aggiungi riga manuale</button>
-          <button onClick={downloadAutoZip}>Scarica ZIP screen</button>
-        </div>
-
-        <div className="stats">
-          <div><span>Candele totali</span><b>{candles.length}</b></div>
-          <div><span>Candele disponibili oggi</span><b>{selectedCandles.filter(c => !usedCandleSet.has(candleSignature(c))).length}</b></div>
-          <div><span>Candele già usate oggi</span><b>{usedCandleKeys.length}</b></div>
-          <div><span>Profitto tabella</span><b className={totalProfit >= 0 ? "pos" : "neg"}>{money(totalProfit)}</b></div>
-        </div>
-      </section>
-
-      <section className="panel">
-        <h2>2. Operazioni modificabili</h2>
-        <p className="hint">Puoi cambiare tutto: tipo, lotto, date, orari, apertura e chiusura. Il P/L si aggiorna subito.</p>
-        <div className="actions">
-          <button onClick={sortByCloseTime}>Ordina per data e ora di chiusura</button>
-        </div>
-
-        <table>
-          <thead>
-            <tr>
-              <th>#</th>
-              <th>Tipo</th>
-              <th>Lotto</th>
-              <th>Data apertura</th>
-              <th>Ora apertura</th>
-              <th>Prezzo apertura</th>
-              <th>Data chiusura</th>
-              <th>Ora chiusura</th>
-              <th>Prezzo chiusura</th>
-              <th>P/L</th>
-              <th>Sposta</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {trades.map((t, i) =>
-              <tr key={i}>
-                <td>{i + 1}</td>
-                <td><select className="table-input" value={t.side} onChange={e => updateTrade(i, "side", e.target.value)}><option value="buy">BUY</option><option value="sell">SELL</option></select></td>
-                <td><input className="table-input small" type="number" step="0.01" value={t.lot} onChange={e => updateTrade(i, "lot", e.target.value)}/></td>
-                <td><input className="table-input date" type="date" value={htmlDate(t.openTime)} onChange={e => updateTrade(i, "openDate", e.target.value)}/></td>
-                <td><input className="table-input time" value={htmlTime(t.openTime)} onChange={e => updateTrade(i, "openTime", e.target.value)}/></td>
-                <td><input className="table-input price" type="number" step="0.01" value={t.entry} onChange={e => updateTrade(i, "entry", e.target.value)}/>{t.entrySource && <small className="source">CSV {t.entrySource}</small>}</td>
-                <td><input className="table-input date" type="date" value={htmlDate(t.closeTime)} onChange={e => updateTrade(i, "closeDate", e.target.value)}/></td>
-                <td><input className="table-input time" value={htmlTime(t.closeTime)} onChange={e => updateTrade(i, "closeTime", e.target.value)}/></td>
-                <td><input className="table-input price" type="number" step="0.01" value={t.exit} onChange={e => updateTrade(i, "exit", e.target.value)}/>{t.exitSource && <small className="source">CSV {t.exitSource}</small>}</td>
-                <td className={Number(t.profit) >= 0 ? "pos" : "neg"}>{money(t.profit)}</td>
-                <td>
-                  <div style={{display:"flex", gap:"6px"}}>
-                    <button
-                      type="button"
-                      title="Sposta sopra"
-                      disabled={i === 0}
-                      onClick={() => moveTrade(i, -1)}
-                    >↑</button>
-                    <button
-                      type="button"
-                      title="Sposta sotto"
-                      disabled={i === trades.length - 1}
-                      onClick={() => moveTrade(i, 1)}
-                    >↓</button>
-                  </div>
-                </td>
-                <td><button onClick={() => setTrades(trades.filter((_, x) => x !== i))}>×</button></td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </section>
-
-      <section className="panel final">
-        <h2>3. Screenshot</h2>
-        <p>Quando le operazioni sono corrette, scarica lo screenshot finale.</p>
-        <button className="primary big" onClick={screenshot}>Scarica screenshot finale</button>
-      </section>
-
-      <section className="panel">
-        <h2>4. Generatore demo Telegram</h2>
-        <p className="hint">
-          Genera un mockup Telegram fedele ai riferimenti, con la sola barra superiore SIMULAZIONE/DEMO.
-          Giornaliero: invio dopo l'ultima chiusura. Settimanale: invio casuale tra 09:00 e 18:00.
-          La risposta non è mai immediata.
-        </p>
-
-        <div className="grid">
-          <label>Screenshot
-            <input type="file" accept="image/png,image/jpeg,image/webp" onChange={e => setTelegramScreenFile(e.target.files?.[0] || null)} />
-          </label>
-
-          <label>Foto profilo
-            <input type="file" accept="image/png,image/jpeg,image/webp" onChange={e => setTelegramAvatarFile(e.target.files?.[0] || null)} />
-          </label>
-
-          <label>Sfondo chat
-            <input type="file" accept="image/png,image/jpeg,image/webp" onChange={e => setTelegramBackgroundFile(e.target.files?.[0] || null)} />
-          </label>
-
-          <label>Chat non lette
-            <input
-              type="number"
-              min="0"
-              max="999"
-              value={telegramUnreadCount}
-              onChange={e => setTelegramUnreadCount(e.target.value)}
-            />
-          </label>
-
-          <label>
-            Privacy intestazione
-            <select
-              value={telegramPrivacyMask ? "yes" : "no"}
-              onChange={e => setTelegramPrivacyMask(e.target.value === "yes")}
-            >
-              <option value="yes">Maschera nera come nei riferimenti</option>
-              <option value="no">Mostra intestazione completa</option>
-            </select>
-          </label>
-
-          <label>Tipo
-            <select value={telegramMode} onChange={e => setTelegramMode(e.target.value)}>
-              <option value="daily">Giornaliero</option>
-              <option value="weekly">Settimanale</option>
-            </select>
-          </label>
-
-          <label>Tema dello screen
-            <select value={telegramTheme} onChange={e => setTelegramTheme(e.target.value)}>
-              <option value="light">Chiaro</option>
-              <option value="dark">Scuro</option>
-            </select>
-          </label>
-
-          <label>Genere
-            <select value={telegramGender} onChange={e => setTelegramGender(e.target.value)}>
-              <option value="auto">Alterna automaticamente</option>
-              <option value="male">Maschile</option>
-              <option value="female">Femminile</option>
-            </select>
-          </label>
-
-          <label>Nome
-            <input value={telegramName} onChange={e => setTelegramName(e.target.value)} placeholder="Automatico" />
-          </label>
-
-          <label>Messaggio
-            <input value={telegramMessage} onChange={e => setTelegramMessage(e.target.value)} placeholder="Automatico e non ripetuto" />
-          </label>
-
-          <label>Risposta
-            <input value={telegramReply} onChange={e => setTelegramReply(e.target.value)} placeholder="Automatica e non ripetuta" />
-          </label>
-        </div>
-
-        <div className="actions">
-          <button className="primary" onClick={generateTelegramImage}>Genera demo Telegram</button>
-          <button onClick={resetTelegramHistory}>Azzera frasi già utilizzate</button>
-        </div>
-      </section>
+      <div className="layout">
+        <aside className="side">
+          <h2>1. Carica CSV</h2>
+          <input type="file" accept=".csv" onChange={e => e.target.files?.[0] && loadCSV(e.target.files[0])}/>
+          <p className="hint">TradingView: OANDA:XAUUSD, timeframe 1m, formato ora Timestamp UNIX.</p>
+          <h2>Layout report</h2>
+          <select value={layout} onChange={e=>setLayout(e.target.value)}><option value="white">Mobile bianco classico</option><option value="compact">Mobile bianco compatto</option><option value="dark">Mobile nero</option></select>
+          <select value={tab} onChange={e=>setTab(e.target.value)}><option>Day</option><option>Week</option><option>Month</option><option>Custom</option></select>
+          <h2>Valori account</h2>
+          <label>Valore punto 1 lotto</label><input type="number" value={pointValue} onChange={e=>setPointValue(e.target.value)}/>
+          <label>Deposit</label><input type="number" value={deposit} onChange={e=>setDeposit(e.target.value)}/>
+          <label>Credit</label><input type="number" value={credit} onChange={e=>setCredit(e.target.value)}/>
+          <label>Withdrawal</label><input type="number" value={withdrawal} onChange={e=>setWithdrawal(e.target.value)}/>
+          <h2>Generazione automatica</h2>
+          <label>Numero screen</label><input type="number" value={screenCount} onChange={e=>setScreenCount(e.target.value)}/>
+          <label>Operazioni positive per screen</label><input type="number" value={autoPositive} onChange={e=>setAutoPositive(e.target.value)}/>
+          <label>Operazioni negative per screen</label><input type="number" value={autoNegative} onChange={e=>setAutoNegative(e.target.value)}/>
+          <label>Profitto minimo screen</label><input type="number" value={profitMin} onChange={e=>setProfitMin(e.target.value)}/>
+          <label>Profitto massimo screen</label><input type="number" value={profitMax} onChange={e=>setProfitMax(e.target.value)}/>
+          <label>Lotto minimo</label><input type="number" step="0.01" value={lotMin} onChange={e=>setLotMin(e.target.value)}/>
+          <label>Lotto massimo</label><input type="number" step="0.01" value={lotMax} onChange={e=>setLotMax(e.target.value)}/>
+          <label>Ora inizio</label><input value={startHour} onChange={e=>setStartHour(e.target.value)}/>
+          <label>Ora fine</label><input value={endHour} onChange={e=>setEndHour(e.target.value)}/>
+          <button className="primary full" onClick={generateAuto}>Genera automatico</button>
+          <button className="full" onClick={downloadAutoZip}>Scarica ZIP screen</button>
+        </aside>
+        <section className="content">
+          <div className="cards"><div><span>Candele</span><b>{candles.length}</b></div><div><span>Prima</span><b>{candles[0]?itDate(candles[0].time):"-"}</b></div><div><span>Ultima</span><b>{candles.at(-1)?itDate(candles.at(-1).time):"-"}</b></div><div><span>Profitto attuale</span><b className={totalProfit>=0?"pos":"neg"}>{money(totalProfit)}</b></div></div>
+          <Chart candles={candles} trades={trades} selected={selected} preview={preview} onPick={setSelected} onPreview={setPreview}/>
+          <div className="preview-panel"><div><h3>Anteprima candela</h3>{activeCandle ? <p><b>{itDate(activeCandle.time)}</b> — O {price(activeCandle.open)} · H {price(activeCandle.high)} · L {price(activeCandle.low)} · C {price(activeCandle.close)} · Riga CSV {activeCandle.rowIndex + 1}</p> : <p>Passa sopra una candela nel grafico.</p>}</div><div className="mini-actions"><button onClick={()=>setCandleAsEntry(activeCandle)}>Usa come apertura</button><button onClick={()=>setCandleAsExit(activeCandle)}>Usa come chiusura</button></div></div>
+          {autoSets.length > 0 && <div className="auto-list"><h3>Screen automatici generati</h3>{autoSets.map((s,i)=><button key={i} onClick={()=>setTrades(s.trades)}>{s.name} · profit {money(s.trades.reduce((a,t)=>a+t.profit,0))}</button>)}</div>}
+          <div className="tradegrid"><div className="box"><h2>Apertura</h2><select value={entryIndex} onChange={e=>{const idx=Number(e.target.value);setEntryIndex(idx);setEntryPrice(candles[idx]?.open.toFixed(3)||"")}}>{candles.map((c,i)=><option key={c.id} value={i}>{candleMenu(c)}</option>)}</select>{entry&&<p className="hint">Range reale: {price(entry.low)} - {price(entry.high)}</p>}<label>Prezzo apertura</label><input type="number" step="0.001" value={entryPrice} onChange={e=>setEntryPrice(e.target.value)}/><label>Secondo apertura</label><input type="number" min="0" max="59" value={entrySecond} onChange={e=>setEntrySecond(e.target.value)}/></div><div className="box"><h2>Chiusura</h2><select value={exitIndex} onChange={e=>{const idx=Number(e.target.value);setExitIndex(idx);setExitPrice(candles[idx]?.close.toFixed(3)||"")}}>{candles.map((c,i)=><option key={c.id} value={i}>{candleMenu(c)}</option>)}</select>{exit&&<p className="hint">Range reale: {price(exit.low)} - {price(exit.high)}</p>}<label>Prezzo chiusura</label><input type="number" step="0.001" value={exitPrice} onChange={e=>setExitPrice(e.target.value)}/><label>Secondo chiusura</label><input type="number" min="0" max="59" value={exitSecond} onChange={e=>setExitSecond(e.target.value)}/></div></div>
+          <div className="bar"><select value={side} onChange={e=>setSide(e.target.value)}><option value="buy">BUY</option><option value="sell">SELL</option></select><input type="number" step="0.01" value={lot} onChange={e=>setLot(e.target.value)}/><button className="primary" onClick={addTrade}>Aggiungi operazione</button></div>
+          <table><thead><tr><th>#</th><th>Dir</th><th>Lotto</th><th>Apertura</th><th>Prezzo</th><th>Chiusura</th><th>Prezzo</th><th>P/L</th><th></th></tr></thead><tbody>{trades.map((t,i)=><tr key={i}><td>{i+1}</td><td className={t.side==="buy"?"buy":"sell"}>{t.side.toUpperCase()}</td><td>{t.lot.toFixed(2)}</td><td>{itDate(t.openTime)}</td><td>{price(t.entry)}</td><td>{itDate(t.closeTime)}</td><td>{price(t.exit)}</td><td className={t.profit>=0?"pos":"neg"}>{money(t.profit)}</td><td><button onClick={()=>setTrades(trades.filter((_,x)=>x!==i))}>×</button></td></tr>)}</tbody></table>
+        </section>
+      </div>
     </main>
   );
 }
