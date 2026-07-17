@@ -338,6 +338,51 @@ function fileToImage(file) {
   });
 }
 
+function wrapCanvasText(ctx, text, maxWidth) {
+  const words = String(text || "").trim().split(/\s+/).filter(Boolean);
+  const lines = [];
+  let current = "";
+  for (const word of words) {
+    const next = current ? `${current} ${word}` : word;
+    if (current && ctx.measureText(next).width > maxWidth) {
+      lines.push(current);
+      current = word;
+    } else {
+      current = next;
+    }
+  }
+  if (current) lines.push(current);
+  return lines.length ? lines : [""];
+}
+
+function drawTelegramWallpaper(ctx, x, y, w, h, dark) {
+  ctx.fillStyle = dark ? "#0b141a" : "#9ed18f";
+  ctx.fillRect(x, y, w, h);
+
+  ctx.save();
+  ctx.globalAlpha = dark ? 0.08 : 0.16;
+  ctx.strokeStyle = dark ? "#8aa4ae" : "#4f9a69";
+  ctx.lineWidth = 2;
+  for (let py = y + 30; py < y + h; py += 105) {
+    for (let px = x + 25; px < x + w; px += 115) {
+      ctx.beginPath();
+      ctx.arc(px, py, 13, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(px - 17, py + 25);
+      ctx.quadraticCurveTo(px, py + 10, px + 19, py + 25);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(px + 34, py - 14);
+      ctx.lineTo(px + 54, py + 14);
+      ctx.lineTo(px + 30, py + 22);
+      ctx.closePath();
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
 async function renderTelegramDemo({
   screenshotFile,
   avatarFile,
@@ -345,256 +390,154 @@ async function renderTelegramDemo({
   message,
   reply,
   messageTime,
-  replyTime
+  replyTime,
+  mode,
+  theme
 }) {
   const screenshot = await fileToImage(screenshotFile);
   const avatar = avatarFile ? await fileToImage(avatarFile) : null;
+  const dark = theme === "dark";
+  const weekly = mode === "weekly";
 
+  const W = 1170;
+  const H = weekly ? 2532 : 2160;
   const canvas = document.createElement("canvas");
-  canvas.width = 1170;
-  canvas.height = 2532;
+  canvas.width = W;
+  canvas.height = H;
   const ctx = canvas.getContext("2d");
 
-  const W = canvas.width;
-  const H = canvas.height;
+  const demoH = 58;
+  drawTelegramWallpaper(ctx, 0, demoH, W, H - demoH, dark);
 
-  const demoH = 72;
-  const statusH = 88;
-  const headerH = 126;
-  const composerH = 132;
-
-  // Barra SIMULAZIONE/DEMO: unica differenza obbligatoria.
-  ctx.fillStyle = "#c62828";
+  // Unica marcatura richiesta.
+  ctx.fillStyle = "#c92525";
   ctx.fillRect(0, 0, W, demoH);
-  ctx.fillStyle = "#ffffff";
-  ctx.font = "700 30px -apple-system, BlinkMacSystemFont, Arial";
+  ctx.fillStyle = "#fff";
+  ctx.font = "700 27px -apple-system, BlinkMacSystemFont, Arial";
   ctx.textAlign = "center";
-  ctx.fillText("SIMULAZIONE / DEMO", W / 2, 47);
+  ctx.fillText("SIMULAZIONE / DEMO", W / 2, 39);
 
-  // Status bar iOS.
-  ctx.fillStyle = "#ffffff";
-  ctx.fillRect(0, demoH, W, statusH);
-  ctx.fillStyle = "#111111";
-  ctx.font = "700 31px -apple-system, BlinkMacSystemFont, Arial";
+  // Header vicino ai riferimenti: pulsante indietro separato e pill contatto.
+  const topY = demoH + 20;
+  ctx.fillStyle = dark ? "#1f2c34" : "rgba(255,255,255,.90)";
+  roundRect(ctx, 42, topY, 206, 105, 53, true, false);
+  ctx.fillStyle = dark ? "#f1f4f5" : "#111";
+  ctx.font = "400 70px Arial";
   ctx.textAlign = "left";
-  ctx.fillText(formatHour(messageTime), 78, demoH + 56);
+  ctx.fillText("‹", 72, topY + 73);
+  ctx.font = "700 31px Arial";
+  ctx.fillText(String(randInt(3, 90)), 149, topY + 67);
 
-  ctx.textAlign = "right";
-  ctx.font = "700 27px Arial";
-  ctx.fillText("▮▮▮  5G  ▰", W - 62, demoH + 55);
+  const contactX = 300;
+  const contactW = 820;
+  ctx.fillStyle = dark ? "#1f2c34" : "rgba(255,255,255,.90)";
+  roundRect(ctx, contactX, topY, contactW, 105, 53, true, false);
 
-  // Header Telegram.
-  const headerY = demoH + statusH;
-  ctx.fillStyle = "#ffffff";
-  ctx.fillRect(0, headerY, W, headerH);
-
-  ctx.fillStyle = "#229ED9";
-  ctx.font = "700 55px Arial";
-  ctx.textAlign = "left";
-  ctx.fillText("‹", 34, headerY + 78);
-
-  const avatarX = 116;
-  const avatarY = headerY + 63;
-  const avatarR = 47;
-
+  const avX = contactX + 67, avY = topY + 52, avR = 39;
   ctx.save();
-  ctx.beginPath();
-  ctx.arc(avatarX, avatarY, avatarR, 0, Math.PI * 2);
-  ctx.clip();
-
+  ctx.beginPath(); ctx.arc(avX, avY, avR, 0, Math.PI * 2); ctx.clip();
   if (avatar) {
-    const scale = Math.max((avatarR * 2) / avatar.width, (avatarR * 2) / avatar.height);
-    const aw = avatar.width * scale;
-    const ah = avatar.height * scale;
-    ctx.drawImage(
-      avatar,
-      avatarX - aw / 2,
-      avatarY - ah / 2,
-      aw,
-      ah
-    );
+    const s = Math.max((avR*2)/avatar.width, (avR*2)/avatar.height);
+    const aw=avatar.width*s, ah=avatar.height*s;
+    ctx.drawImage(avatar, avX-aw/2, avY-ah/2, aw, ah);
   } else {
-    ctx.fillStyle = "#5ca9df";
-    ctx.fillRect(avatarX - avatarR, avatarY - avatarR, avatarR * 2, avatarR * 2);
-    const initials = name.split(/\s+/).map(x => x[0] || "").join("").slice(0, 2).toUpperCase();
-    ctx.fillStyle = "#ffffff";
-    ctx.font = "700 34px Arial";
-    ctx.textAlign = "center";
-    ctx.fillText(initials, avatarX, avatarY + 12);
+    ctx.fillStyle="#5aa9df"; ctx.fillRect(avX-avR,avY-avR,avR*2,avR*2);
+    ctx.fillStyle="#fff"; ctx.font="700 28px Arial"; ctx.textAlign="center";
+    const initials=name.split(/\s+/).map(v=>v[0]||"").join("").slice(0,2).toUpperCase();
+    ctx.fillText(initials,avX,avY+10);
   }
   ctx.restore();
 
-  ctx.textAlign = "left";
-  ctx.fillStyle = "#111111";
-  ctx.font = "700 36px -apple-system, BlinkMacSystemFont, Arial";
-  ctx.fillText(name, 183, headerY + 54);
+  ctx.textAlign="left";
+  ctx.fillStyle=dark?"#f3f5f5":"#111";
+  ctx.font="700 38px -apple-system, BlinkMacSystemFont, Arial";
+  ctx.fillText(name, contactX+126, topY+44);
+  ctx.fillStyle=dark?"#aebac1":"#80868b";
+  ctx.font="25px -apple-system, BlinkMacSystemFont, Arial";
+  ctx.fillText("ultimo accesso recentemente", contactX+126, topY+82);
 
-  ctx.fillStyle = "#8b8b8f";
-  ctx.font = "25px -apple-system, BlinkMacSystemFont, Arial";
-  ctx.fillText("ultimo accesso recentemente", 183, headerY + 91);
+  // Etichetta Oggi.
+  const dayY = topY + 130;
+  ctx.fillStyle = dark ? "rgba(31,44,52,.82)" : "rgba(116,128,133,.72)";
+  roundRect(ctx, W/2-66, dayY, 132, 50, 25, true, false);
+  ctx.fillStyle="#fff"; ctx.font="29px Arial"; ctx.textAlign="center";
+  ctx.fillText("Oggi",W/2,dayY+34);
 
-  ctx.fillStyle = "#229ED9";
-  ctx.font = "700 32px Arial";
-  ctx.textAlign = "right";
-  ctx.fillText("☎", W - 105, headerY + 76);
-  ctx.fillText("⋯", W - 38, headerY + 72);
-
-  // Sfondo Telegram chiaro con texture.
-  const chatY = headerY + headerH;
-  const chatH = H - chatY - composerH;
-  ctx.fillStyle = "#dbe5e8";
-  ctx.fillRect(0, chatY, W, chatH);
-
-  // Pattern leggero simile allo sfondo Telegram.
-  ctx.save();
-  ctx.globalAlpha = 0.055;
-  ctx.strokeStyle = "#62808b";
-  ctx.lineWidth = 2;
-  for (let y = chatY + 42; y < chatY + chatH; y += 96) {
-    for (let x = 32; x < W; x += 104) {
-      ctx.beginPath();
-      ctx.arc(x, y, 12, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.moveTo(x - 16, y + 24);
-      ctx.lineTo(x + 18, y + 24);
-      ctx.stroke();
-    }
+  // Fit screen: sempre quasi tutta la larghezza, come nei riferimenti.
+  const bubbleX = 27;
+  const bubbleTop = dayY + 68;
+  const targetImageW = weekly ? 820 : 900;
+  const maxImageH = weekly ? 1760 : 1450;
+  let scale = targetImageW / screenshot.width;
+  let drawW = targetImageW;
+  let drawH = screenshot.height * scale;
+  if (drawH > maxImageH) {
+    scale = maxImageH / screenshot.height;
+    drawH = maxImageH;
+    drawW = screenshot.width * scale;
   }
-  ctx.restore();
+  const bubbleW = Math.min(W - 54, drawW + 24);
+  const imageX = bubbleX + 12;
 
-  // Data centrale.
-  ctx.fillStyle = "rgba(72, 102, 112, .68)";
-  roundRect(ctx, W / 2 - 82, chatY + 28, 164, 50, 25, true, false);
-  ctx.fillStyle = "#ffffff";
-  ctx.font = "700 23px -apple-system, BlinkMacSystemFont, Arial";
-  ctx.textAlign = "center";
-  ctx.fillText("oggi", W / 2, chatY + 61);
+  ctx.font = "44px -apple-system, BlinkMacSystemFont, Arial";
+  const msgLines = wrapCanvasText(ctx, message, bubbleW - 58);
+  const msgLineH = 55;
+  const textH = msgLines.length * msgLineH;
+  const bubbleH = 12 + drawH + 24 + textH + 58;
 
-  // Messaggio ricevuto con screenshot.
-  const inX = 26;
-  const inY = chatY + 110;
-  const inW = 866;
-  const pad = 12;
-  const imageW = inW - pad * 2;
-  const imageMaxH = 1420;
-  const scale = Math.min(imageW / screenshot.width, imageMaxH / screenshot.height);
-  const drawW = screenshot.width * scale;
-  const drawH = screenshot.height * scale;
-
-  // Calcolo righe del messaggio.
-  ctx.font = "31px -apple-system, BlinkMacSystemFont, Arial";
-  const msgMaxW = inW - 42;
-  const words = message.trim().split(/\s+/);
-  const lines = [];
-  let current = "";
-  for (const word of words) {
-    const candidate = current ? `${current} ${word}` : word;
-    if (ctx.measureText(candidate).width > msgMaxW && current) {
-      lines.push(current);
-      current = word;
-    } else {
-      current = candidate;
-    }
-  }
-  if (current) lines.push(current);
-
-  const messageBlockH = Math.max(54, lines.length * 39 + 22);
-  const inH = pad + drawH + messageBlockH + 50;
-
-  ctx.fillStyle = "#ffffff";
-  roundRect(ctx, inX, inY, inW, inH, 22, true, false);
-
-  // Piccola coda bolla.
+  ctx.fillStyle = dark ? "#202c33" : "#ffffff";
+  roundRect(ctx, bubbleX, bubbleTop, bubbleW, bubbleH, 24, true, false);
   ctx.beginPath();
-  ctx.moveTo(inX + 4, inY + inH - 28);
-  ctx.lineTo(inX - 16, inY + inH - 8);
-  ctx.lineTo(inX + 24, inY + inH - 10);
-  ctx.closePath();
-  ctx.fill();
+  ctx.moveTo(bubbleX+5,bubbleTop+bubbleH-32);
+  ctx.lineTo(bubbleX-16,bubbleTop+bubbleH-8);
+  ctx.lineTo(bubbleX+29,bubbleTop+bubbleH-12);
+  ctx.closePath(); ctx.fill();
 
-  // Immagine.
+  // Screen senza fascia vuota laterale: centrato nella bolla, larghezza bolla adattata.
   ctx.save();
-  roundRect(ctx, inX + pad, inY + pad, drawW, drawH, 15, false, false);
+  roundRect(ctx,imageX,bubbleTop+12,drawW,drawH,13,false,false);
   ctx.clip();
-  ctx.drawImage(screenshot, inX + pad, inY + pad, drawW, drawH);
+  ctx.drawImage(screenshot,imageX,bubbleTop+12,drawW,drawH);
   ctx.restore();
 
-  // Testo ricevuto.
-  ctx.fillStyle = "#111111";
-  ctx.font = "31px -apple-system, BlinkMacSystemFont, Arial";
-  ctx.textAlign = "left";
-  let textY = inY + pad + drawH + 42;
-  for (const line of lines) {
-    ctx.fillText(line, inX + 22, textY);
-    textY += 39;
-  }
+  ctx.fillStyle=dark?"#f1f4f5":"#111";
+  ctx.font="44px -apple-system, BlinkMacSystemFont, Arial";
+  ctx.textAlign="left";
+  let ty=bubbleTop+12+drawH+58;
+  for(const line of msgLines){ ctx.fillText(line,bubbleX+28,ty); ty+=msgLineH; }
 
-  // Ora messaggio ricevuto.
-  ctx.fillStyle = "#8b8b8f";
-  ctx.font = "23px -apple-system, BlinkMacSystemFont, Arial";
-  ctx.textAlign = "right";
-  ctx.fillText(formatHour(messageTime), inX + inW - 18, inY + inH - 18);
+  ctx.fillStyle=dark?"#8696a0":"#8d8d92";
+  ctx.font="26px -apple-system, BlinkMacSystemFont, Arial";
+  ctx.textAlign="right";
+  ctx.fillText(formatHour(messageTime),bubbleX+bubbleW-22,bubbleTop+bubbleH-20);
 
-  // Risposta inviata.
-  ctx.font = "31px -apple-system, BlinkMacSystemFont, Arial";
-  const replyTextW = ctx.measureText(reply).width;
-  const outW = Math.min(820, Math.max(330, replyTextW + 128));
-  const outH = 104;
-  const outX = W - outW - 25;
-  const outY = Math.min(chatY + chatH - 170, inY + inH + 36);
-
-  ctx.fillStyle = "#d9fdd3";
-  roundRect(ctx, outX, outY, outW, outH, 22, true, false);
-
+  // Risposta grande e immediatamente sotto, come nei riferimenti.
+  ctx.font="43px -apple-system, BlinkMacSystemFont, Arial";
+  const replyLines=wrapCanvasText(ctx,reply,760);
+  const replyLineH=53;
+  const replyTextW=Math.max(...replyLines.map(v=>ctx.measureText(v).width));
+  const outW=Math.min(880,Math.max(410,replyTextW+150));
+  const outH=Math.max(108,replyLines.length*replyLineH+65);
+  const outX=W-outW-25;
+  const outY=Math.min(H-200-outH,bubbleTop+bubbleH+32);
+  ctx.fillStyle=dark?"#005c4b":"#d9fdd3";
+  roundRect(ctx,outX,outY,outW,outH,25,true,false);
   ctx.beginPath();
-  ctx.moveTo(outX + outW - 5, outY + outH - 27);
-  ctx.lineTo(outX + outW + 16, outY + outH - 8);
-  ctx.lineTo(outX + outW - 26, outY + outH - 11);
-  ctx.closePath();
-  ctx.fill();
+  ctx.moveTo(outX+outW-6,outY+outH-31);
+  ctx.lineTo(outX+outW+18,outY+outH-7);
+  ctx.lineTo(outX+outW-31,outY+outH-12);
+  ctx.closePath();ctx.fill();
 
-  ctx.fillStyle = "#111111";
-  ctx.font = "31px -apple-system, BlinkMacSystemFont, Arial";
-  ctx.textAlign = "left";
-  ctx.fillText(reply, outX + 22, outY + 43);
+  ctx.fillStyle=dark?"#f1f4f5":"#111";
+  ctx.textAlign="left";
+  let ry=outY+48;
+  for(const line of replyLines){ctx.fillText(line,outX+25,ry);ry+=replyLineH;}
+  ctx.fillStyle=dark?"#53bdeb":"#37a95b";
+  ctx.font="26px Arial";ctx.textAlign="right";
+  ctx.fillText(`${formatHour(replyTime)} ✓✓`,outX+outW-20,outY+outH-18);
 
-  ctx.fillStyle = "#63a57c";
-  ctx.font = "23px -apple-system, BlinkMacSystemFont, Arial";
-  ctx.textAlign = "right";
-  ctx.fillText(`${formatHour(replyTime)}  ✓✓`, outX + outW - 18, outY + 82);
-
-  // Composer inferiore Telegram.
-  const composerY = H - composerH;
-  ctx.fillStyle = "#f7f7f8";
-  ctx.fillRect(0, composerY, W, composerH);
-  ctx.strokeStyle = "#d1d1d3";
-  ctx.beginPath();
-  ctx.moveTo(0, composerY);
-  ctx.lineTo(W, composerY);
-  ctx.stroke();
-
-  ctx.fillStyle = "#ffffff";
-  ctx.strokeStyle = "#d1d1d3";
-  ctx.lineWidth = 2;
-  roundRect(ctx, 82, composerY + 22, W - 178, 76, 38, true, true);
-
-  ctx.fillStyle = "#8d8d92";
-  ctx.font = "30px -apple-system, BlinkMacSystemFont, Arial";
-  ctx.textAlign = "left";
-  ctx.fillText("Messaggio", 113, composerY + 70);
-
-  ctx.fillStyle = "#229ED9";
-  ctx.font = "700 38px Arial";
-  ctx.fillText("+", 25, composerY + 72);
-  ctx.textAlign = "right";
-  ctx.fillText("🎤", W - 32, composerY + 72);
-
-  // Home indicator.
-  ctx.fillStyle = "#111111";
-  roundRect(ctx, W / 2 - 145, H - 18, 290, 8, 4, true, false);
-
-  return new Promise(resolve => canvas.toBlob(resolve, "image/png"));
+  // Niente barra di composizione: gli allegati sono ritagliati prima dell'input.
+  return new Promise(resolve=>canvas.toBlob(resolve,"image/png"));
 }
 
 function renderReportBlob(trades, layout, tab, deposit, credit, withdrawal) {
@@ -875,6 +818,7 @@ export default function LucaTradingAuto() {
   const [telegramScreenFile, setTelegramScreenFile] = useState(null);
   const [telegramAvatarFile, setTelegramAvatarFile] = useState(null);
   const [telegramMode, setTelegramMode] = useState("daily");
+  const [telegramTheme, setTelegramTheme] = useState("light");
   const [telegramName, setTelegramName] = useState("");
   const [telegramGender, setTelegramGender] = useState("auto");
   const [telegramMessage, setTelegramMessage] = useState("");
@@ -1313,7 +1257,9 @@ export default function LucaTradingAuto() {
       message: selectedMessage,
       reply: selectedReply,
       messageTime,
-      replyTime
+      replyTime,
+      mode: telegramMode,
+      theme: telegramTheme
     });
 
     downloadBlob(blob, `telegram_demo_${selectedName.toLowerCase()}.png`);
@@ -1482,6 +1428,13 @@ export default function LucaTradingAuto() {
             <select value={telegramMode} onChange={e => setTelegramMode(e.target.value)}>
               <option value="daily">Giornaliero</option>
               <option value="weekly">Settimanale</option>
+            </select>
+          </label>
+
+          <label>Tema dello screen
+            <select value={telegramTheme} onChange={e => setTelegramTheme(e.target.value)}>
+              <option value="light">Chiaro</option>
+              <option value="dark">Scuro</option>
             </select>
           </label>
 
