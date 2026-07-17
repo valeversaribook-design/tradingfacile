@@ -251,388 +251,6 @@ function saveUsedCandlesToday(usedSet) {
 }
 
 
-const TELEGRAM_NAMES = {
-  male: ["Marco", "Luca", "Matteo", "Andrea", "Davide", "Simone", "Alessandro", "Federico"],
-  female: ["Giulia", "Martina", "Sara", "Elena", "Chiara", "Francesca", "Alessia", "Valentina"]
-};
-
-const TELEGRAM_PHRASES = {
-  male: [
-    "Ciao Cesare, questa settimana è andata davvero bene 💪😎",
-    "Settimana chiusa con grande soddisfazione, grazie per le indicazioni 🚀💪",
-    "Poche operazioni ma molto precise. Sono davvero contento del risultato 😎🔥",
-    "Eccomi con il risultato, questa volta ho seguito tutto alla lettera 💪📈"
-  ],
-  female: [
-    "Ciao Cesare, sono davvero contenta del risultato di questa settimana ❤️😊",
-    "Eccomi con il risultato, grazie per tutte le indicazioni 😍📈",
-    "Questa settimana è andata molto meglio del previsto ❤️✨",
-    "Sono riuscita a seguire tutto e il risultato mi rende felicissima 😊💪"
-  ]
-};
-
-const TELEGRAM_REPLIES = {
-  male: ["Grande {name} 😎💪", "Ottimo lavoro {name} 🔥💪", "Vamos {name} 😎🚀", "Daje {name}, continua così 💪🔥"],
-  female: ["Grande {name} 😎❤️", "Ottimo lavoro {name} 😍✨", "Bravissima {name} ❤️🙌", "Vamos {name} 😎💪"]
-};
-
-function telegramStorageKey() {
-  return "luca-trading-telegram-demo-history";
-}
-
-function readTelegramHistory() {
-  if (typeof window === "undefined") return { phrases: [], replies: [], names: [], lastGender: "female" };
-  try {
-    const raw = window.localStorage.getItem(telegramStorageKey());
-    const parsed = raw ? JSON.parse(raw) : {};
-    return {
-      phrases: Array.isArray(parsed.phrases) ? parsed.phrases : [],
-      replies: Array.isArray(parsed.replies) ? parsed.replies : [],
-      names: Array.isArray(parsed.names) ? parsed.names : [],
-      lastGender: parsed.lastGender === "male" ? "male" : "female"
-    };
-  } catch {
-    return { phrases: [], replies: [], names: [], lastGender: "female" };
-  }
-}
-
-function saveTelegramHistory(history) {
-  if (typeof window !== "undefined") {
-    window.localStorage.setItem(telegramStorageKey(), JSON.stringify(history));
-  }
-}
-
-function randomFromUnused(items, used) {
-  const available = items.filter(item => !used.includes(item));
-  return choose(available.length ? available : items);
-}
-
-function addMinutes(date, minutes) {
-  return new Date(date.getTime() + minutes * 60000);
-}
-
-function formatHour(date) {
-  const p = partsIT(date);
-  return `${p.hour}:${p.minute}`;
-}
-
-function weeklyMessageTime() {
-  const now = new Date();
-  const p = partsIT(now);
-  const hour = randInt(9, 17);
-  const minute = randInt(0, 59);
-  return dateFromInputs(`${p.year}-${p.month}-${p.day}`, `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}:00`);
-}
-
-function fileToImage(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const img = new Image();
-      img.onload = () => resolve(img);
-      img.onerror = reject;
-      img.src = reader.result;
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
-}
-
-function wrapCanvasText(ctx, text, maxWidth) {
-  const words = String(text || "").trim().split(/\s+/).filter(Boolean);
-  const lines = [];
-  let current = "";
-  for (const word of words) {
-    const next = current ? `${current} ${word}` : word;
-    if (current && ctx.measureText(next).width > maxWidth) {
-      lines.push(current);
-      current = word;
-    } else {
-      current = next;
-    }
-  }
-  if (current) lines.push(current);
-  return lines.length ? lines : [""];
-}
-
-function drawTelegramWallpaper(ctx, x, y, w, h, dark) {
-  ctx.fillStyle = dark ? "#0b141a" : "#9ed18f";
-  ctx.fillRect(x, y, w, h);
-
-  ctx.save();
-  ctx.globalAlpha = dark ? 0.08 : 0.16;
-  ctx.strokeStyle = dark ? "#8aa4ae" : "#4f9a69";
-  ctx.lineWidth = 2;
-  for (let py = y + 30; py < y + h; py += 105) {
-    for (let px = x + 25; px < x + w; px += 115) {
-      ctx.beginPath();
-      ctx.arc(px, py, 13, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.moveTo(px - 17, py + 25);
-      ctx.quadraticCurveTo(px, py + 10, px + 19, py + 25);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.moveTo(px + 34, py - 14);
-      ctx.lineTo(px + 54, py + 14);
-      ctx.lineTo(px + 30, py + 22);
-      ctx.closePath();
-      ctx.stroke();
-    }
-  }
-  ctx.restore();
-}
-
-async function renderTelegramDemo({
-  screenshotFile,
-  avatarFile,
-  backgroundFile,
-  unreadCount,
-  privacyMask,
-  name,
-  message,
-  reply,
-  messageTime,
-  replyTime,
-  mode,
-  theme
-}) {
-  const screenshot = await fileToImage(screenshotFile);
-  const avatar = avatarFile ? await fileToImage(avatarFile) : null;
-  const background = backgroundFile ? await fileToImage(backgroundFile) : null;
-  const dark = theme === "dark";
-  const weekly = mode === "weekly";
-
-  const W = 1170;
-  const H = weekly ? 2532 : 2160;
-  const canvas = document.createElement("canvas");
-  canvas.width = W;
-  canvas.height = H;
-  const ctx = canvas.getContext("2d");
-
-  const demoH = 58;
-
-  if (background) {
-    const bgScale = Math.max(W / background.width, (H - demoH) / background.height);
-    const bgW = background.width * bgScale;
-    const bgH = background.height * bgScale;
-    ctx.drawImage(
-      background,
-      (W - bgW) / 2,
-      demoH + ((H - demoH) - bgH) / 2,
-      bgW,
-      bgH
-    );
-  } else {
-    // Fallback verde vicino ai riferimenti allegati.
-    const grad = ctx.createLinearGradient(0, demoH, W, H);
-    grad.addColorStop(0, dark ? "#101b18" : "#d9e9a8");
-    grad.addColorStop(0.52, dark ? "#173328" : "#84c982");
-    grad.addColorStop(1, dark ? "#0f2520" : "#54b88d");
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, demoH, W, H - demoH);
-    drawTelegramWallpaper(ctx, 0, demoH, W, H - demoH, dark);
-  }
-
-  // Unica marcatura richiesta.
-  ctx.fillStyle = "#c92525";
-  ctx.fillRect(0, 0, W, demoH);
-  ctx.fillStyle = "#fff";
-  ctx.font = "700 27px -apple-system, BlinkMacSystemFont, Arial";
-  ctx.textAlign = "center";
-  ctx.fillText("SIMULAZIONE / DEMO", W / 2, 39);
-
-  // Header vicino ai riferimenti: pulsante indietro separato e pill contatto.
-  const topY = demoH + 20;
-
-  // Pulsante indietro e contatore non letti.
-  const backX = 42;
-  const backY = topY;
-  const backW = 206;
-  const backH = 105;
-  ctx.fillStyle = dark ? "#1f2c34" : "rgba(255,255,255,.90)";
-  roundRect(ctx, backX, backY, backW, backH, 53, true, false);
-
-  ctx.fillStyle = dark ? "#f1f4f5" : "#111111";
-  ctx.font = "400 70px Arial";
-  ctx.textAlign = "left";
-  ctx.fillText("‹", backX + 30, backY + 73);
-
-  const unreadText = String(Math.max(0, Math.min(999, Number(unreadCount) || 0)));
-  if (unreadText !== "0") {
-    const unreadR = 31;
-    const unreadCX = backX + 132;
-    const unreadCY = backY + 52;
-
-    ctx.beginPath();
-    ctx.arc(unreadCX, unreadCY, unreadR, 0, Math.PI * 2);
-    ctx.fillStyle = dark ? "#ffffff" : "#111111";
-    ctx.fill();
-
-    ctx.fillStyle = dark ? "#111111" : "#ffffff";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.font = "700 25px Arial";
-    ctx.fillText(unreadText, unreadCX, unreadCY + 1);
-    ctx.textBaseline = "alphabetic";
-  }
-
-  // Pill centrale con nome e stato.
-  const contactX = 300;
-  const contactW = 700;
-  const contactH = 105;
-  ctx.fillStyle = dark ? "#1f2c34" : "rgba(255,255,255,.90)";
-  roundRect(ctx, contactX, topY, contactW, contactH, 53, true, false);
-
-  ctx.textAlign = "center";
-  ctx.fillStyle = dark ? "#f1f4f5" : "#111111";
-  ctx.font = "700 37px Arial";
-  ctx.fillText(name, contactX + contactW / 2, topY + 47);
-
-  ctx.fillStyle = dark ? "#9aa4aa" : "#7f8287";
-  ctx.font = "27px Arial";
-  ctx.fillText("ultimo accesso di recente", contactX + contactW / 2, topY + 83);
-
-  // Foto profilo a destra.
-  const avX = 1080;
-  const avY = topY + 52;
-  const avR = 43;
-
-  ctx.save();
-  ctx.beginPath();
-  ctx.arc(avX, avY, avR, 0, Math.PI * 2);
-  ctx.clip();
-
-  if (avatar) {
-    const s = Math.max((avR * 2) / avatar.width, (avR * 2) / avatar.height);
-    const aw = avatar.width * s;
-    const ah = avatar.height * s;
-    ctx.drawImage(avatar, avX - aw / 2, avY - ah / 2, aw, ah);
-  } else {
-    const g = ctx.createLinearGradient(avX-avR, avY-avR, avX+avR, avY+avR);
-    g.addColorStop(0, "#53d6e4");
-    g.addColorStop(1, "#2ab7c8");
-    ctx.fillStyle = g;
-    ctx.fillRect(avX-avR, avY-avR, avR*2, avR*2);
-
-    const initials = name
-      .split(/\s+/)
-      .map(v => v[0] || "")
-      .join("")
-      .slice(0, 2)
-      .toUpperCase();
-
-    ctx.fillStyle = "#ffffff";
-    ctx.font = "700 28px Arial";
-    ctx.textAlign = "center";
-    ctx.fillText(initials, avX, avY + 10);
-  }
-  ctx.restore();
-
-  ctx.beginPath();
-  ctx.arc(avX, avY, avR + 4, 0, Math.PI * 2);
-  ctx.strokeStyle = "#ffffff";
-  ctx.lineWidth = 7;
-  ctx.stroke();
-
-  // Maschera privacy opzionale senza coprire avatar, nome o contatore.
-  if (privacyMask) {
-    const maskX = contactX + contactW - 42;
-    const maskY = topY - 8;
-    const maskW = Math.max(0, avX - avR - maskX - 14);
-    const maskH = contactH + 16;
-
-    if (maskW > 20) {
-      const maskGrad = ctx.createLinearGradient(maskX, maskY, maskX + maskW, maskY);
-      maskGrad.addColorStop(0, "rgba(0,0,0,.55)");
-      maskGrad.addColorStop(.32, "rgba(0,0,0,.92)");
-      maskGrad.addColorStop(1, "rgba(0,0,0,1)");
-      ctx.fillStyle = maskGrad;
-      roundRect(ctx, maskX, maskY, maskW, maskH, 20, true, false);
-    }
-  }
-  const dayY = topY + 108;
-
-  // Fit screen: sempre quasi tutta la larghezza, come nei riferimenti.
-  const bubbleX = 27;
-  const bubbleTop = dayY + 28;
-  const targetImageW = weekly ? 820 : 900;
-  const maxImageH = weekly ? 1580 : 1260;
-  let scale = targetImageW / screenshot.width;
-  let drawW = targetImageW;
-  let drawH = screenshot.height * scale;
-  if (drawH > maxImageH) {
-    scale = maxImageH / screenshot.height;
-    drawH = maxImageH;
-    drawW = screenshot.width * scale;
-  }
-  const bubbleW = Math.min(W - 54, drawW + 24);
-  const imageX = bubbleX + 12;
-
-  ctx.font = "44px -apple-system, BlinkMacSystemFont, Arial";
-  const msgLines = wrapCanvasText(ctx, message, bubbleW - 58);
-  const msgLineH = 55;
-  const textH = msgLines.length * msgLineH;
-  const bubbleH = 12 + drawH + 24 + textH + 58;
-
-  ctx.fillStyle = dark ? "#202c33" : "#ffffff";
-  roundRect(ctx, bubbleX, bubbleTop, bubbleW, bubbleH, 24, true, false);
-  ctx.beginPath();
-  ctx.moveTo(bubbleX+5,bubbleTop+bubbleH-32);
-  ctx.lineTo(bubbleX-16,bubbleTop+bubbleH-8);
-  ctx.lineTo(bubbleX+29,bubbleTop+bubbleH-12);
-  ctx.closePath(); ctx.fill();
-
-  // Screen senza fascia vuota laterale: centrato nella bolla, larghezza bolla adattata.
-  ctx.save();
-  roundRect(ctx,imageX,bubbleTop+12,drawW,drawH,13,false,false);
-  ctx.clip();
-  ctx.drawImage(screenshot,imageX,bubbleTop+12,drawW,drawH);
-  ctx.restore();
-
-  ctx.fillStyle=dark?"#f1f4f5":"#111";
-  ctx.font="44px -apple-system, BlinkMacSystemFont, Arial";
-  ctx.textAlign="left";
-  let ty=bubbleTop+12+drawH+58;
-  for(const line of msgLines){ ctx.fillText(line,bubbleX+28,ty); ty+=msgLineH; }
-
-  ctx.fillStyle=dark?"#8696a0":"#8d8d92";
-  ctx.font="26px -apple-system, BlinkMacSystemFont, Arial";
-  ctx.textAlign="right";
-  ctx.fillText(formatHour(messageTime),bubbleX+bubbleW-22,bubbleTop+bubbleH-20);
-
-  // Risposta grande e immediatamente sotto, come nei riferimenti.
-  ctx.font="43px -apple-system, BlinkMacSystemFont, Arial";
-  const replyLines=wrapCanvasText(ctx,reply,760);
-  const replyLineH=53;
-  const replyTextW=Math.max(...replyLines.map(v=>ctx.measureText(v).width));
-  const outW=Math.min(880,Math.max(410,replyTextW+150));
-  const outH=Math.max(108,replyLines.length*replyLineH+65);
-  const outX=W-outW-25;
-  const minBubbleGap = 38;
-  const desiredOutY = bubbleTop + bubbleH + minBubbleGap;
-  const maxOutY = H - 170;
-  const outY = Math.min(desiredOutY, maxOutY);
-  ctx.fillStyle=dark?"#005c4b":"#d9fdd3";
-  roundRect(ctx,outX,outY,outW,outH,25,true,false);
-  ctx.beginPath();
-  ctx.moveTo(outX+outW-6,outY+outH-31);
-  ctx.lineTo(outX+outW+18,outY+outH-7);
-  ctx.lineTo(outX+outW-31,outY+outH-12);
-  ctx.closePath();ctx.fill();
-
-  ctx.fillStyle=dark?"#f1f4f5":"#111";
-  ctx.textAlign="left";
-  let ry=outY+48;
-  for(const line of replyLines){ctx.fillText(line,outX+25,ry);ry+=replyLineH;}
-  ctx.fillStyle=dark?"#53bdeb":"#37a95b";
-  ctx.font="26px Arial";ctx.textAlign="right";
-  ctx.fillText(`${formatHour(replyTime)} ✓✓`,outX+outW-20,outY+outH-18);
-
-  // Niente barra di composizione: gli allegati sono ritagliati prima dell'input.
-  return new Promise(resolve=>canvas.toBlob(resolve,"image/png"));
-}
-
 function renderReportBlob(trades, layout, tab, deposit, credit, withdrawal) {
   const totalProfit = trades.reduce((a, t) => a + Number(t.profit || 0), 0);
   const balance = Number(deposit || 0) + Number(credit || 0) - Number(withdrawal || 0) + totalProfit;
@@ -907,18 +525,7 @@ export default function LucaTradingAuto() {
   const [trades, setTrades] = useState([]);
   const [autoSets, setAutoSets] = useState([]);
   const [usedCandleKeys, setUsedCandleKeys] = useState([]);
-
-  const [telegramScreenFile, setTelegramScreenFile] = useState(null);
-  const [telegramAvatarFile, setTelegramAvatarFile] = useState(null);
-  const [telegramBackgroundFile, setTelegramBackgroundFile] = useState(null);
-  const [telegramUnreadCount, setTelegramUnreadCount] = useState("15");
-  const [telegramPrivacyMask, setTelegramPrivacyMask] = useState(true);
-  const [telegramMode, setTelegramMode] = useState("daily");
-  const [telegramTheme, setTelegramTheme] = useState("light");
-  const [telegramName, setTelegramName] = useState("");
-  const [telegramGender, setTelegramGender] = useState("auto");
-  const [telegramMessage, setTelegramMessage] = useState("");
-  const [telegramReply, setTelegramReply] = useState("");
+  const [isGenerating, setIsGenerating] = useState(false);
 
   const [layout, setLayout] = useState("ios_mt5_white");
   const [tab, setTab] = useState("Week");
@@ -1071,143 +678,95 @@ export default function LucaTradingAuto() {
     });
   }
 
-  function buildTrade(wantPositive, pool, sc, reservedKeys = new Set()) {
-    const openTarget = sc?.open !== null && !Number.isNaN(sc?.open) ? sc.open : null;
-    const closeTarget = sc?.close !== null && !Number.isNaN(sc?.close) ? sc.close : null;
-
-    const availablePool = pool.filter(c => !reservedKeys.has(candleSignature(c)));
-    if (availablePool.length < 2) return null;
-
-    for (let tries = 0; tries < 900; tries++) {
-      let openPick;
-      let closePick;
-
-      // Regola fondamentale:
-      // i prezzi generati sono SEMPRE valori reali presi dal CSV: open/high/low/close della candela.
-      // Se compili uno scenario, quel valore viene usato solo come riferimento:
-      // l'app prende il valore OHLC reale più vicino nel CSV.
-      if (openTarget !== null) {
-        openPick = pickCandleNear(availablePool, openTarget, 0, availablePool.length - 2);
-      } else {
-        const a = randInt(0, availablePool.length - 2);
-        const c1 = availablePool[a];
-        const v1 = choose(ohlcValues(c1));
-        openPick = { index: a, candle: c1, value: v1.value, source: v1.label };
-      }
-
-      if (!openPick) continue;
-
-      if (closeTarget !== null) {
-        closePick = pickCandleNear(availablePool, closeTarget, openPick.index + 1, availablePool.length - 1);
-      } else {
-        const b = randInt(openPick.index + 1, availablePool.length - 1);
-        const c2 = availablePool[b];
-        const v2 = choose(ohlcValues(c2));
-        closePick = { index: b, candle: c2, value: v2.value, source: v2.label };
-      }
-
-      if (!closePick) continue;
-
-      const entry = Number(openPick.value);
-      const exit = Number(closePick.value);
-
-      let side = sc?.side && sc.side !== "auto" ? sc.side : null;
-      if (!side) {
-        side = wantPositive
-          ? (exit >= entry ? "buy" : "sell")
-          : (exit >= entry ? "sell" : "buy");
-      }
-
-      const lot = Number(rand(Number(lotMin), Number(lotMax)).toFixed(2));
-      const profit = Number(pnl(side, entry, exit, lot, Number(pointValue)).toFixed(2));
-
-      if (wantPositive && profit <= 0) continue;
-      if (!wantPositive && profit >= 0) continue;
-
-      reservedKeys.add(candleSignature(openPick.candle));
-      reservedKeys.add(candleSignature(closePick.candle));
-
-      return {
-        side,
-        lot,
-        openCandleId: openPick.candle.id,
-        closeCandleId: closePick.candle.id,
-        openTime: withRandomSecond(openPick.candle.time),
-        closeTime: withRandomSecond(closePick.candle.time),
-        entry: Number(entry.toFixed(2)),
-        exit: Number(exit.toFixed(2)),
-        entrySource: openPick.source,
-        exitSource: closePick.source,
-        profit
-      };
-    }
-    return null;
-  }
-
-  function generateAuto() {
+  async function generateAuto() {
     if (!candles.length) return alert("Carica prima il CSV.");
-    const dayKeys = selectedDayKeys.length ? selectedDayKeys : dayOptions.map(d => d.key);
+
+    const dayKeys = selectedDayKeys.length
+      ? selectedDayKeys
+      : dayOptions.map(d => d.key);
+
     if (!dayKeys.length) return alert("Nessun giorno selezionato.");
+    if (isGenerating) return;
 
-    const scs = scenarios();
-    const created = [];
-    const confirmedUsed = new Set(usedCandleSet);
+    const pools = dayKeys.map(day => ({
+      day,
+      candles: validTimePool(day).map(c => ({
+        id: c.id,
+        time: c.time.toISOString(),
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close
+      }))
+    })).filter(group => group.candles.length >= 5);
 
-    for (let s = 0; s < Number(screenCount || 1); s++) {
-      let best = null;
+    if (!pools.length) {
+      return alert("Non ci sono abbastanza candele nel periodo e negli orari selezionati.");
+    }
 
-      for (let attempt = 0; attempt < 600; attempt++) {
-        const arr = [];
-        let scenarioCursor = 0;
-        const attemptUsed = new Set(confirmedUsed);
+    setIsGenerating(true);
 
-        for (const day of dayKeys) {
-          const pool = validTimePool(day);
-          if (pool.length < 5) continue;
-
-          for (let i = 0; i < Number(autoPositive || 0); i++) {
-            const sc = scs[scenarioCursor++ % scs.length];
-            const t = buildTrade(true, pool, sc, attemptUsed);
-            if (t) arr.push(t);
+    try {
+      const response = await fetch("/api/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          pools,
+          usedCandleKeys: Array.from(usedCandleSet),
+          scenarios: scenarios(),
+          settings: {
+            screenCount: Number(screenCount || 1),
+            autoPositive: Number(autoPositive || 0),
+            autoNegative: Number(autoNegative || 0),
+            profitMin: Number(profitMin),
+            profitMax: Number(profitMax),
+            lotMin: Number(lotMin),
+            lotMax: Number(lotMax),
+            pointValue: Number(pointValue)
           }
+        })
+      });
 
-          for (let i = 0; i < Number(autoNegative || 0); i++) {
-            const sc = scs[scenarioCursor++ % scs.length];
-            const t = buildTrade(false, pool, sc, attemptUsed);
-            if (t) arr.push(t);
-          }
-        }
+      const result = await response.json();
 
-        arr.sort((a, b) => new Date(a.closeTime).getTime() - new Date(b.closeTime).getTime());
-        const total = arr.reduce((a, t) => a + t.profit, 0);
-
-        if (arr.length && total >= Number(profitMin) && total <= Number(profitMax)) {
-          best = arr;
-
-          arr.forEach(t => {
-            const openCandle = candles.find(c => c.id === t.openCandleId);
-            const closeCandle = candles.find(c => c.id === t.closeCandleId);
-            if (openCandle) confirmedUsed.add(candleSignature(openCandle));
-            if (closeCandle) confirmedUsed.add(candleSignature(closeCandle));
-          });
-
-          break;
-        }
+      if (!response.ok) {
+        throw new Error(result?.error || "Errore durante la generazione.");
       }
 
-      if (best) created.push({ name: `screen_${String(s + 1).padStart(2, "0")}`, trades: best });
+      const created = (result.sets || []).map(set => ({
+        ...set,
+        trades: set.trades.map(t => ({
+          ...t,
+          openTime: new Date(t.openTime),
+          closeTime: new Date(t.closeTime)
+        }))
+      }));
+
+      if (!created.length) {
+        alert(result?.message || "Non riesco a generare operazioni con questi vincoli.");
+        return;
+      }
+
+      const updatedUsed = new Set(result.usedCandleKeys || []);
+      saveUsedCandlesToday(updatedUsed);
+      setUsedCandleKeys(Array.from(updatedUsed));
+
+      setAutoSets(created);
+      setTrades(
+        [...created[0].trades].sort(
+          (a, b) => new Date(a.closeTime).getTime() - new Date(b.closeTime).getTime()
+        )
+      );
+
+      if (result.partial) {
+        alert(`Generate ${created.length} schermate su ${Number(screenCount || 1)}. Prova ad allargare i vincoli per ottenere le altre.`);
+      }
+    } catch (error) {
+      console.error(error);
+      alert(error?.message || "Il backend non ha completato la generazione.");
+    } finally {
+      setIsGenerating(false);
     }
-
-    if (!created.length) {
-      alert("Non riesco con questi vincoli oppure le candele nuove disponibili per oggi non sono sufficienti. Le candele già usate restano escluse anche dopo refresh o cambio CSV.");
-      return;
-    }
-
-    saveUsedCandlesToday(confirmedUsed);
-    setUsedCandleKeys(Array.from(confirmedUsed));
-
-    setAutoSets(created);
-    setTrades([...created[0].trades].sort((a, b) => new Date(a.closeTime).getTime() - new Date(b.closeTime).getTime()));
   }
 
   function sortByCloseTime() {
@@ -1311,75 +870,6 @@ export default function LucaTradingAuto() {
     }].sort((a, b) => new Date(a.closeTime).getTime() - new Date(b.closeTime).getTime()));
   }
 
-  function resetTelegramHistory() {
-    if (typeof window !== "undefined") {
-      window.localStorage.removeItem(telegramStorageKey());
-    }
-    alert("Archivio demo Telegram azzerato.");
-  }
-
-  async function generateTelegramImage() {
-    if (!telegramScreenFile) {
-      return alert("Carica prima lo screenshot.");
-    }
-
-    if (!telegramAvatarFile) {
-      return alert("Carica una foto profilo: così non verrà più generata l'icona con l'iniziale.");
-    }
-
-    const history = readTelegramHistory();
-    const gender = telegramGender === "auto"
-      ? (history.lastGender === "male" ? "female" : "male")
-      : telegramGender;
-
-    const selectedName = telegramName.trim() || randomFromUnused(TELEGRAM_NAMES[gender], history.names);
-    const selectedMessage = telegramMessage.trim() || randomFromUnused(TELEGRAM_PHRASES[gender], history.phrases);
-    const replyTemplate = telegramReply.trim() || randomFromUnused(TELEGRAM_REPLIES[gender], history.replies);
-    const selectedReply = replyTemplate.replace("{name}", selectedName);
-
-    let messageTime;
-    if (telegramMode === "weekly") {
-      messageTime = weeklyMessageTime();
-    } else {
-      if (!trades.length) {
-        return alert("Per il giornaliero servono operazioni presenti.");
-      }
-      const lastClose = [...trades].map(t => new Date(t.closeTime)).sort((a, b) => b - a)[0];
-      messageTime = addMinutes(lastClose, randInt(5, 40));
-    }
-
-    const replyTime = addMinutes(messageTime, randInt(7, 45));
-
-    const blob = await renderTelegramDemo({
-      screenshotFile: telegramScreenFile,
-      avatarFile: telegramAvatarFile,
-      backgroundFile: telegramBackgroundFile,
-      unreadCount: telegramUnreadCount,
-      privacyMask: telegramPrivacyMask,
-      name: selectedName,
-      message: selectedMessage,
-      reply: selectedReply,
-      messageTime,
-      replyTime,
-      mode: telegramMode,
-      theme: telegramTheme
-    });
-
-    downloadBlob(blob, `telegram_demo_${selectedName.toLowerCase()}.png`);
-
-    saveTelegramHistory({
-      phrases: [...history.phrases, selectedMessage],
-      replies: [...history.replies, replyTemplate],
-      names: [...history.names, selectedName],
-      lastGender: gender
-    });
-
-    setTelegramName(selectedName);
-    setTelegramGender(gender);
-    setTelegramMessage(selectedMessage);
-    setTelegramReply(selectedReply);
-  }
-
   return (
     <main className="page">
       <header className="top">
@@ -1431,7 +921,7 @@ export default function LucaTradingAuto() {
         </div>
 
         <div className="actions">
-          <button className="primary" onClick={generateAuto}>Genera operazioni</button>
+          <button className="primary" disabled={isGenerating} onClick={generateAuto}>{isGenerating ? "Generazione in corso..." : "Genera operazioni"}</button>
           <button onClick={addBlankTrade}>Aggiungi riga manuale</button>
           <button onClick={downloadAutoZip}>Scarica ZIP screen</button>
         </div>
@@ -1510,88 +1000,7 @@ export default function LucaTradingAuto() {
         <button className="primary big" onClick={screenshot}>Scarica screenshot finale</button>
       </section>
 
-      <section className="panel">
-        <h2>4. Generatore demo Telegram</h2>
-        <p className="hint">
-          Genera un mockup Telegram fedele ai riferimenti, con la sola barra superiore SIMULAZIONE/DEMO.
-          Giornaliero: invio dopo l'ultima chiusura. Settimanale: invio casuale tra 09:00 e 18:00.
-          La risposta non è mai immediata.
-        </p>
 
-        <div className="grid">
-          <label>Screenshot
-            <input type="file" accept="image/png,image/jpeg,image/webp" onChange={e => setTelegramScreenFile(e.target.files?.[0] || null)} />
-          </label>
-
-          <label>Foto profilo
-            <input type="file" accept="image/png,image/jpeg,image/webp" onChange={e => setTelegramAvatarFile(e.target.files?.[0] || null)} />
-          </label>
-
-          <label>Sfondo chat
-            <input type="file" accept="image/png,image/jpeg,image/webp" onChange={e => setTelegramBackgroundFile(e.target.files?.[0] || null)} />
-          </label>
-
-          <label>Chat non lette
-            <input
-              type="number"
-              min="0"
-              max="999"
-              value={telegramUnreadCount}
-              onChange={e => setTelegramUnreadCount(e.target.value)}
-            />
-          </label>
-
-          <label>
-            Privacy intestazione
-            <select
-              value={telegramPrivacyMask ? "yes" : "no"}
-              onChange={e => setTelegramPrivacyMask(e.target.value === "yes")}
-            >
-              <option value="yes">Maschera privacy opzionale</option>
-              <option value="no">Mostra intestazione completa</option>
-            </select>
-          </label>
-
-          <label>Tipo
-            <select value={telegramMode} onChange={e => setTelegramMode(e.target.value)}>
-              <option value="daily">Giornaliero</option>
-              <option value="weekly">Settimanale</option>
-            </select>
-          </label>
-
-          <label>Tema dello screen
-            <select value={telegramTheme} onChange={e => setTelegramTheme(e.target.value)}>
-              <option value="light">Chiaro</option>
-              <option value="dark">Scuro</option>
-            </select>
-          </label>
-
-          <label>Genere
-            <select value={telegramGender} onChange={e => setTelegramGender(e.target.value)}>
-              <option value="auto">Alterna automaticamente</option>
-              <option value="male">Maschile</option>
-              <option value="female">Femminile</option>
-            </select>
-          </label>
-
-          <label>Nome
-            <input value={telegramName} onChange={e => setTelegramName(e.target.value)} placeholder="Automatico" />
-          </label>
-
-          <label>Messaggio
-            <input value={telegramMessage} onChange={e => setTelegramMessage(e.target.value)} placeholder="Automatico e non ripetuto" />
-          </label>
-
-          <label>Risposta
-            <input value={telegramReply} onChange={e => setTelegramReply(e.target.value)} placeholder="Automatica e non ripetuta" />
-          </label>
-        </div>
-
-        <div className="actions">
-          <button className="primary" onClick={generateTelegramImage}>Genera demo Telegram</button>
-          <button onClick={resetTelegramHistory}>Azzera frasi già utilizzate</button>
-        </div>
-      </section>
     </main>
   );
 }
