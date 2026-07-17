@@ -444,88 +444,120 @@ async function renderTelegramDemo({
 
   // Header vicino ai riferimenti: pulsante indietro separato e pill contatto.
   const topY = demoH + 20;
+
+  // Pulsante indietro e contatore non letti.
+  const backX = 42;
+  const backY = topY;
+  const backW = 206;
+  const backH = 105;
   ctx.fillStyle = dark ? "#1f2c34" : "rgba(255,255,255,.90)";
-  roundRect(ctx, 42, topY, 206, 105, 53, true, false);
-  ctx.fillStyle = dark ? "#f1f4f5" : "#111";
+  roundRect(ctx, backX, backY, backW, backH, 53, true, false);
+
+  ctx.fillStyle = dark ? "#f1f4f5" : "#111111";
   ctx.font = "400 70px Arial";
   ctx.textAlign = "left";
-  ctx.fillText("‹", 72, topY + 73);
-  ctx.font = "700 31px Arial";
+  ctx.fillText("‹", backX + 30, backY + 73);
+
   const unreadText = String(Math.max(0, Math.min(999, Number(unreadCount) || 0)));
   if (unreadText !== "0") {
-    ctx.fillStyle = dark ? "#ffffff" : "#111111";
+    const unreadR = 31;
+    const unreadCX = backX + 132;
+    const unreadCY = backY + 52;
+
     ctx.beginPath();
-    ctx.arc(174, topY + 52, 31, 0, Math.PI * 2);
+    ctx.arc(unreadCX, unreadCY, unreadR, 0, Math.PI * 2);
+    ctx.fillStyle = dark ? "#ffffff" : "#111111";
     ctx.fill();
+
     ctx.fillStyle = dark ? "#111111" : "#ffffff";
     ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
     ctx.font = "700 25px Arial";
-    ctx.fillText(unreadText, 174, topY + 61);
+    ctx.fillText(unreadText, unreadCX, unreadCY + 1);
+    ctx.textBaseline = "alphabetic";
   }
 
+  // Pill centrale con nome e stato.
   const contactX = 300;
-  const contactW = 820;
+  const contactW = 700;
+  const contactH = 105;
   ctx.fillStyle = dark ? "#1f2c34" : "rgba(255,255,255,.90)";
-  roundRect(ctx, contactX, topY, contactW, 105, 53, true, false);
+  roundRect(ctx, contactX, topY, contactW, contactH, 53, true, false);
 
-  const avX = contactX + 67, avY = topY + 52, avR = 39;
+  ctx.textAlign = "center";
+  ctx.fillStyle = dark ? "#f1f4f5" : "#111111";
+  ctx.font = "700 37px Arial";
+  ctx.fillText(name, contactX + contactW / 2, topY + 47);
+
+  ctx.fillStyle = dark ? "#9aa4aa" : "#7f8287";
+  ctx.font = "27px Arial";
+  ctx.fillText("ultimo accesso di recente", contactX + contactW / 2, topY + 83);
+
+  // Foto profilo a destra.
+  const avX = 1080;
+  const avY = topY + 52;
+  const avR = 43;
+
   ctx.save();
-  ctx.beginPath(); ctx.arc(avX, avY, avR, 0, Math.PI * 2); ctx.clip();
+  ctx.beginPath();
+  ctx.arc(avX, avY, avR, 0, Math.PI * 2);
+  ctx.clip();
+
   if (avatar) {
-    const s = Math.max((avR*2)/avatar.width, (avR*2)/avatar.height);
-    const aw=avatar.width*s, ah=avatar.height*s;
-    ctx.drawImage(avatar, avX-aw/2, avY-ah/2, aw, ah);
+    const s = Math.max((avR * 2) / avatar.width, (avR * 2) / avatar.height);
+    const aw = avatar.width * s;
+    const ah = avatar.height * s;
+    ctx.drawImage(avatar, avX - aw / 2, avY - ah / 2, aw, ah);
   } else {
-    // Avatar neutro, senza iniziale artificiale.
-    const avatarGrad = ctx.createLinearGradient(avX-avR, avY-avR, avX+avR, avY+avR);
-    avatarGrad.addColorStop(0, "#d6d6d6");
-    avatarGrad.addColorStop(1, "#8f8f8f");
-    ctx.fillStyle = avatarGrad;
+    const g = ctx.createLinearGradient(avX-avR, avY-avR, avX+avR, avY+avR);
+    g.addColorStop(0, "#53d6e4");
+    g.addColorStop(1, "#2ab7c8");
+    ctx.fillStyle = g;
     ctx.fillRect(avX-avR, avY-avR, avR*2, avR*2);
-    ctx.fillStyle = "rgba(255,255,255,.78)";
-    ctx.beginPath();
-    ctx.arc(avX, avY-9, 15, 0, Math.PI*2);
-    ctx.fill();
-    ctx.beginPath();
-    ctx.arc(avX, avY+27, 28, Math.PI, 0);
-    ctx.fill();
+
+    const initials = name
+      .split(/\s+/)
+      .map(v => v[0] || "")
+      .join("")
+      .slice(0, 2)
+      .toUpperCase();
+
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "700 28px Arial";
+    ctx.textAlign = "center";
+    ctx.fillText(initials, avX, avY + 10);
   }
   ctx.restore();
 
-  ctx.textAlign="left";
-  ctx.fillStyle=dark?"#f3f5f5":"#111";
-  ctx.font="700 38px -apple-system, BlinkMacSystemFont, Arial";
-  ctx.fillText(name, contactX+126, topY+44);
-  ctx.fillStyle=dark?"#aebac1":"#80868b";
-  ctx.font="25px -apple-system, BlinkMacSystemFont, Arial";
-  ctx.fillText("ultimo accesso recentemente", contactX+126, topY+82);
+  ctx.beginPath();
+  ctx.arc(avX, avY, avR + 4, 0, Math.PI * 2);
+  ctx.strokeStyle = "#ffffff";
+  ctx.lineWidth = 7;
+  ctx.stroke();
 
-  // Mascheratura privacy come nei riferimenti.
+  // Maschera privacy opzionale senza coprire avatar, nome o contatore.
   if (privacyMask) {
-    const maskX = contactX + 455;
-    const maskY = topY - 12;
-    const maskW = contactW - 430;
-    const maskH = 124;
-    const maskGrad = ctx.createLinearGradient(maskX, maskY, maskX + maskW, maskY);
-    maskGrad.addColorStop(0, "rgba(0,0,0,.72)");
-    maskGrad.addColorStop(.22, "rgba(0,0,0,.96)");
-    maskGrad.addColorStop(1, "rgba(0,0,0,1)");
-    ctx.fillStyle = maskGrad;
-    roundRect(ctx, maskX, maskY, maskW, maskH, 20, true, false);
-  }
+    const maskX = contactX + contactW - 42;
+    const maskY = topY - 8;
+    const maskW = Math.max(0, avX - avR - maskX - 14);
+    const maskH = contactH + 16;
 
-  // Etichetta Oggi.
-  const dayY = topY + 130;
-  ctx.fillStyle = dark ? "rgba(31,44,52,.82)" : "rgba(116,128,133,.72)";
-  roundRect(ctx, W/2-66, dayY, 132, 50, 25, true, false);
-  ctx.fillStyle="#fff"; ctx.font="29px Arial"; ctx.textAlign="center";
-  ctx.fillText("Oggi",W/2,dayY+34);
+    if (maskW > 20) {
+      const maskGrad = ctx.createLinearGradient(maskX, maskY, maskX + maskW, maskY);
+      maskGrad.addColorStop(0, "rgba(0,0,0,.55)");
+      maskGrad.addColorStop(.32, "rgba(0,0,0,.92)");
+      maskGrad.addColorStop(1, "rgba(0,0,0,1)");
+      ctx.fillStyle = maskGrad;
+      roundRect(ctx, maskX, maskY, maskW, maskH, 20, true, false);
+    }
+  }
+  const dayY = topY + 108;
 
   // Fit screen: sempre quasi tutta la larghezza, come nei riferimenti.
   const bubbleX = 27;
-  const bubbleTop = dayY + 68;
+  const bubbleTop = dayY + 28;
   const targetImageW = weekly ? 820 : 900;
-  const maxImageH = weekly ? 1760 : 1450;
+  const maxImageH = weekly ? 1580 : 1260;
   let scale = targetImageW / screenshot.width;
   let drawW = targetImageW;
   let drawH = screenshot.height * scale;
@@ -577,7 +609,10 @@ async function renderTelegramDemo({
   const outW=Math.min(880,Math.max(410,replyTextW+150));
   const outH=Math.max(108,replyLines.length*replyLineH+65);
   const outX=W-outW-25;
-  const outY=Math.min(H-200-outH,bubbleTop+bubbleH+32);
+  const minBubbleGap = 38;
+  const desiredOutY = bubbleTop + bubbleH + minBubbleGap;
+  const maxOutY = H - 170;
+  const outY = Math.min(desiredOutY, maxOutY);
   ctx.fillStyle=dark?"#005c4b":"#d9fdd3";
   roundRect(ctx,outX,outY,outW,outH,25,true,false);
   ctx.beginPath();
@@ -1512,7 +1547,7 @@ export default function LucaTradingAuto() {
               value={telegramPrivacyMask ? "yes" : "no"}
               onChange={e => setTelegramPrivacyMask(e.target.value === "yes")}
             >
-              <option value="yes">Maschera nera come nei riferimenti</option>
+              <option value="yes">Maschera privacy opzionale</option>
               <option value="no">Mostra intestazione completa</option>
             </select>
           </label>
