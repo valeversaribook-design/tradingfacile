@@ -250,6 +250,194 @@ function saveUsedCandlesToday(usedSet) {
   }
 }
 
+
+const TELEGRAM_NAMES = {
+  male: ["Marco", "Luca", "Matteo", "Andrea", "Davide", "Simone", "Alessandro", "Federico"],
+  female: ["Giulia", "Martina", "Sara", "Elena", "Chiara", "Francesca", "Alessia", "Valentina"]
+};
+
+const TELEGRAM_PHRASES = {
+  male: [
+    "Ciao Cesare, questa settimana è andata davvero bene 💪😎",
+    "Settimana chiusa con grande soddisfazione, grazie per le indicazioni 🚀💪",
+    "Poche operazioni ma molto precise. Sono davvero contento del risultato 😎🔥",
+    "Eccomi con il risultato, questa volta ho seguito tutto alla lettera 💪📈"
+  ],
+  female: [
+    "Ciao Cesare, sono davvero contenta del risultato di questa settimana ❤️😊",
+    "Eccomi con il risultato, grazie per tutte le indicazioni 😍📈",
+    "Questa settimana è andata molto meglio del previsto ❤️✨",
+    "Sono riuscita a seguire tutto e il risultato mi rende felicissima 😊💪"
+  ]
+};
+
+const TELEGRAM_REPLIES = {
+  male: ["Grande {name} 😎💪", "Ottimo lavoro {name} 🔥💪", "Vamos {name} 😎🚀", "Daje {name}, continua così 💪🔥"],
+  female: ["Grande {name} 😎❤️", "Ottimo lavoro {name} 😍✨", "Bravissima {name} ❤️🙌", "Vamos {name} 😎💪"]
+};
+
+function telegramStorageKey() {
+  return "luca-trading-telegram-demo-history";
+}
+
+function readTelegramHistory() {
+  if (typeof window === "undefined") return { phrases: [], replies: [], names: [], lastGender: "female" };
+  try {
+    const raw = window.localStorage.getItem(telegramStorageKey());
+    const parsed = raw ? JSON.parse(raw) : {};
+    return {
+      phrases: Array.isArray(parsed.phrases) ? parsed.phrases : [],
+      replies: Array.isArray(parsed.replies) ? parsed.replies : [],
+      names: Array.isArray(parsed.names) ? parsed.names : [],
+      lastGender: parsed.lastGender === "male" ? "male" : "female"
+    };
+  } catch {
+    return { phrases: [], replies: [], names: [], lastGender: "female" };
+  }
+}
+
+function saveTelegramHistory(history) {
+  if (typeof window !== "undefined") {
+    window.localStorage.setItem(telegramStorageKey(), JSON.stringify(history));
+  }
+}
+
+function randomFromUnused(items, used) {
+  const available = items.filter(item => !used.includes(item));
+  return choose(available.length ? available : items);
+}
+
+function addMinutes(date, minutes) {
+  return new Date(date.getTime() + minutes * 60000);
+}
+
+function formatHour(date) {
+  const p = partsIT(date);
+  return `${p.hour}:${p.minute}`;
+}
+
+function weeklyMessageTime() {
+  const now = new Date();
+  const p = partsIT(now);
+  const hour = randInt(9, 17);
+  const minute = randInt(0, 59);
+  return dateFromInputs(`${p.year}-${p.month}-${p.day}`, `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}:00`);
+}
+
+function fileToImage(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = reject;
+      img.src = reader.result;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+async function renderTelegramDemo({ screenshotFile, name, message, reply, messageTime, replyTime }) {
+  const image = await fileToImage(screenshotFile);
+  const canvas = document.createElement("canvas");
+  canvas.width = 1080;
+  canvas.height = 1920;
+  const ctx = canvas.getContext("2d");
+
+  ctx.fillStyle = "#dfe7ea";
+  ctx.fillRect(0, 0, 1080, 1920);
+
+  ctx.fillStyle = "#c62828";
+  ctx.fillRect(0, 0, 1080, 74);
+  ctx.fillStyle = "#fff";
+  ctx.font = "700 30px Arial";
+  ctx.textAlign = "center";
+  ctx.fillText("SIMULAZIONE / DEMO", 540, 48);
+
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(0, 74, 1080, 138);
+
+  ctx.fillStyle = "#229ED9";
+  ctx.beginPath();
+  ctx.arc(72, 143, 43, 0, Math.PI * 2);
+  ctx.fill();
+
+  const initials = name.split(" ").map(x => x[0]).join("").slice(0, 2).toUpperCase();
+  ctx.fillStyle = "#fff";
+  ctx.font = "700 30px Arial";
+  ctx.textAlign = "center";
+  ctx.fillText(initials, 72, 154);
+
+  ctx.textAlign = "left";
+  ctx.fillStyle = "#111";
+  ctx.font = "700 34px Arial";
+  ctx.fillText(name, 135, 132);
+  ctx.fillStyle = "#6b7280";
+  ctx.font = "24px Arial";
+  ctx.fillText("ultimo accesso recentemente", 135, 172);
+
+  ctx.fillStyle = "#e6ebee";
+  ctx.fillRect(0, 212, 1080, 1708);
+
+  const bubbleX = 40, bubbleY = 260, bubbleW = 820, pad = 18;
+  const maxW = bubbleW - pad * 2, maxH = 970;
+  const scale = Math.min(maxW / image.width, maxH / image.height);
+  const drawW = image.width * scale, drawH = image.height * scale;
+
+  ctx.fillStyle = "#fff";
+  roundRect(ctx, bubbleX, bubbleY, bubbleW, drawH + 190, 22, true, false);
+  ctx.drawImage(image, bubbleX + pad, bubbleY + pad, drawW, drawH);
+
+  ctx.fillStyle = "#111";
+  ctx.font = "28px Arial";
+  const words = message.split(" ");
+  let line = "", y = bubbleY + drawH + 58;
+  for (const word of words) {
+    const test = line + word + " ";
+    if (ctx.measureText(test).width > bubbleW - 40 && line) {
+      ctx.fillText(line, bubbleX + 20, y);
+      line = word + " ";
+      y += 36;
+    } else {
+      line = test;
+    }
+  }
+  ctx.fillText(line, bubbleX + 20, y);
+
+  ctx.fillStyle = "#6b7280";
+  ctx.font = "22px Arial";
+  ctx.textAlign = "right";
+  ctx.fillText(formatHour(messageTime), bubbleX + bubbleW - 20, bubbleY + drawH + 164);
+
+  const replyW = Math.min(720, Math.max(320, reply.length * 18 + 120));
+  const replyX = 1080 - replyW - 40;
+  const replyY = Math.min(1630, bubbleY + drawH + 240);
+
+  ctx.fillStyle = "#d9fdd3";
+  roundRect(ctx, replyX, replyY, replyW, 112, 22, true, false);
+  ctx.fillStyle = "#111";
+  ctx.font = "28px Arial";
+  ctx.textAlign = "left";
+  ctx.fillText(reply, replyX + 22, replyY + 46);
+  ctx.fillStyle = "#6b7280";
+  ctx.font = "22px Arial";
+  ctx.textAlign = "right";
+  ctx.fillText(`${formatHour(replyTime)}  ✓✓`, replyX + replyW - 18, replyY + 88);
+
+  ctx.save();
+  ctx.translate(540, 1080);
+  ctx.rotate(-Math.PI / 8);
+  ctx.globalAlpha = 0.10;
+  ctx.fillStyle = "#b71c1c";
+  ctx.font = "700 100px Arial";
+  ctx.textAlign = "center";
+  ctx.fillText("DEMO", 0, 0);
+  ctx.restore();
+
+  return new Promise(resolve => canvas.toBlob(resolve, "image/png"));
+}
+
 function renderReportBlob(trades, layout, tab, deposit, credit, withdrawal) {
   const totalProfit = trades.reduce((a, t) => a + Number(t.profit || 0), 0);
   const balance = Number(deposit || 0) + Number(credit || 0) - Number(withdrawal || 0) + totalProfit;
@@ -524,6 +712,13 @@ export default function LucaTradingAuto() {
   const [trades, setTrades] = useState([]);
   const [autoSets, setAutoSets] = useState([]);
   const [usedCandleKeys, setUsedCandleKeys] = useState([]);
+
+  const [telegramScreenFile, setTelegramScreenFile] = useState(null);
+  const [telegramMode, setTelegramMode] = useState("daily");
+  const [telegramName, setTelegramName] = useState("");
+  const [telegramGender, setTelegramGender] = useState("auto");
+  const [telegramMessage, setTelegramMessage] = useState("");
+  const [telegramReply, setTelegramReply] = useState("");
 
   const [layout, setLayout] = useState("ios_mt5_white");
   const [tab, setTab] = useState("Week");
@@ -916,6 +1111,65 @@ export default function LucaTradingAuto() {
     }].sort((a, b) => new Date(a.closeTime).getTime() - new Date(b.closeTime).getTime()));
   }
 
+  function resetTelegramHistory() {
+    if (typeof window !== "undefined") {
+      window.localStorage.removeItem(telegramStorageKey());
+    }
+    alert("Archivio demo Telegram azzerato.");
+  }
+
+  async function generateTelegramImage() {
+    if (!telegramScreenFile) {
+      return alert("Carica prima lo screenshot.");
+    }
+
+    const history = readTelegramHistory();
+    const gender = telegramGender === "auto"
+      ? (history.lastGender === "male" ? "female" : "male")
+      : telegramGender;
+
+    const selectedName = telegramName.trim() || randomFromUnused(TELEGRAM_NAMES[gender], history.names);
+    const selectedMessage = telegramMessage.trim() || randomFromUnused(TELEGRAM_PHRASES[gender], history.phrases);
+    const replyTemplate = telegramReply.trim() || randomFromUnused(TELEGRAM_REPLIES[gender], history.replies);
+    const selectedReply = replyTemplate.replace("{name}", selectedName);
+
+    let messageTime;
+    if (telegramMode === "weekly") {
+      messageTime = weeklyMessageTime();
+    } else {
+      if (!trades.length) {
+        return alert("Per il giornaliero servono operazioni presenti.");
+      }
+      const lastClose = [...trades].map(t => new Date(t.closeTime)).sort((a, b) => b - a)[0];
+      messageTime = addMinutes(lastClose, randInt(5, 40));
+    }
+
+    const replyTime = addMinutes(messageTime, randInt(7, 45));
+
+    const blob = await renderTelegramDemo({
+      screenshotFile: telegramScreenFile,
+      name: selectedName,
+      message: selectedMessage,
+      reply: selectedReply,
+      messageTime,
+      replyTime
+    });
+
+    downloadBlob(blob, `telegram_demo_${selectedName.toLowerCase()}.png`);
+
+    saveTelegramHistory({
+      phrases: [...history.phrases, selectedMessage],
+      replies: [...history.replies, replyTemplate],
+      names: [...history.names, selectedName],
+      lastGender: gender
+    });
+
+    setTelegramName(selectedName);
+    setTelegramGender(gender);
+    setTelegramMessage(selectedMessage);
+    setTelegramReply(selectedReply);
+  }
+
   return (
     <main className="page">
       <header className="top">
@@ -1044,6 +1298,53 @@ export default function LucaTradingAuto() {
         <h2>3. Screenshot</h2>
         <p>Quando le operazioni sono corrette, scarica lo screenshot finale.</p>
         <button className="primary big" onClick={screenshot}>Scarica screenshot finale</button>
+      </section>
+
+      <section className="panel">
+        <h2>4. Generatore demo Telegram</h2>
+        <p className="hint">
+          Genera un mockup chiaramente marcato SIMULAZIONE/DEMO.
+          Giornaliero: invio dopo l'ultima chiusura. Settimanale: invio casuale tra 09:00 e 18:00.
+          La risposta non è mai immediata.
+        </p>
+
+        <div className="grid">
+          <label>Screenshot
+            <input type="file" accept="image/png,image/jpeg,image/webp" onChange={e => setTelegramScreenFile(e.target.files?.[0] || null)} />
+          </label>
+
+          <label>Tipo
+            <select value={telegramMode} onChange={e => setTelegramMode(e.target.value)}>
+              <option value="daily">Giornaliero</option>
+              <option value="weekly">Settimanale</option>
+            </select>
+          </label>
+
+          <label>Genere
+            <select value={telegramGender} onChange={e => setTelegramGender(e.target.value)}>
+              <option value="auto">Alterna automaticamente</option>
+              <option value="male">Maschile</option>
+              <option value="female">Femminile</option>
+            </select>
+          </label>
+
+          <label>Nome
+            <input value={telegramName} onChange={e => setTelegramName(e.target.value)} placeholder="Automatico" />
+          </label>
+
+          <label>Messaggio
+            <input value={telegramMessage} onChange={e => setTelegramMessage(e.target.value)} placeholder="Automatico e non ripetuto" />
+          </label>
+
+          <label>Risposta
+            <input value={telegramReply} onChange={e => setTelegramReply(e.target.value)} placeholder="Automatica e non ripetuta" />
+          </label>
+        </div>
+
+        <div className="actions">
+          <button className="primary" onClick={generateTelegramImage}>Genera demo Telegram</button>
+          <button onClick={resetTelegramHistory}>Azzera frasi già utilizzate</button>
+        </div>
       </section>
     </main>
   );
