@@ -386,6 +386,9 @@ function drawTelegramWallpaper(ctx, x, y, w, h, dark) {
 async function renderTelegramDemo({
   screenshotFile,
   avatarFile,
+  backgroundFile,
+  unreadCount,
+  privacyMask,
   name,
   message,
   reply,
@@ -396,6 +399,7 @@ async function renderTelegramDemo({
 }) {
   const screenshot = await fileToImage(screenshotFile);
   const avatar = avatarFile ? await fileToImage(avatarFile) : null;
+  const background = backgroundFile ? await fileToImage(backgroundFile) : null;
   const dark = theme === "dark";
   const weekly = mode === "weekly";
 
@@ -407,7 +411,28 @@ async function renderTelegramDemo({
   const ctx = canvas.getContext("2d");
 
   const demoH = 58;
-  drawTelegramWallpaper(ctx, 0, demoH, W, H - demoH, dark);
+
+  if (background) {
+    const bgScale = Math.max(W / background.width, (H - demoH) / background.height);
+    const bgW = background.width * bgScale;
+    const bgH = background.height * bgScale;
+    ctx.drawImage(
+      background,
+      (W - bgW) / 2,
+      demoH + ((H - demoH) - bgH) / 2,
+      bgW,
+      bgH
+    );
+  } else {
+    // Fallback verde vicino ai riferimenti allegati.
+    const grad = ctx.createLinearGradient(0, demoH, W, H);
+    grad.addColorStop(0, dark ? "#101b18" : "#d9e9a8");
+    grad.addColorStop(0.52, dark ? "#173328" : "#84c982");
+    grad.addColorStop(1, dark ? "#0f2520" : "#54b88d");
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, demoH, W, H - demoH);
+    drawTelegramWallpaper(ctx, 0, demoH, W, H - demoH, dark);
+  }
 
   // Unica marcatura richiesta.
   ctx.fillStyle = "#c92525";
@@ -426,7 +451,17 @@ async function renderTelegramDemo({
   ctx.textAlign = "left";
   ctx.fillText("‹", 72, topY + 73);
   ctx.font = "700 31px Arial";
-  ctx.fillText(String(randInt(3, 90)), 149, topY + 67);
+  const unreadText = String(Math.max(0, Math.min(999, Number(unreadCount) || 0)));
+  if (unreadText !== "0") {
+    ctx.fillStyle = dark ? "#ffffff" : "#111111";
+    ctx.beginPath();
+    ctx.arc(174, topY + 52, 31, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = dark ? "#111111" : "#ffffff";
+    ctx.textAlign = "center";
+    ctx.font = "700 25px Arial";
+    ctx.fillText(unreadText, 174, topY + 61);
+  }
 
   const contactX = 300;
   const contactW = 820;
@@ -441,10 +476,19 @@ async function renderTelegramDemo({
     const aw=avatar.width*s, ah=avatar.height*s;
     ctx.drawImage(avatar, avX-aw/2, avY-ah/2, aw, ah);
   } else {
-    ctx.fillStyle="#5aa9df"; ctx.fillRect(avX-avR,avY-avR,avR*2,avR*2);
-    ctx.fillStyle="#fff"; ctx.font="700 28px Arial"; ctx.textAlign="center";
-    const initials=name.split(/\s+/).map(v=>v[0]||"").join("").slice(0,2).toUpperCase();
-    ctx.fillText(initials,avX,avY+10);
+    // Avatar neutro, senza iniziale artificiale.
+    const avatarGrad = ctx.createLinearGradient(avX-avR, avY-avR, avX+avR, avY+avR);
+    avatarGrad.addColorStop(0, "#d6d6d6");
+    avatarGrad.addColorStop(1, "#8f8f8f");
+    ctx.fillStyle = avatarGrad;
+    ctx.fillRect(avX-avR, avY-avR, avR*2, avR*2);
+    ctx.fillStyle = "rgba(255,255,255,.78)";
+    ctx.beginPath();
+    ctx.arc(avX, avY-9, 15, 0, Math.PI*2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(avX, avY+27, 28, Math.PI, 0);
+    ctx.fill();
   }
   ctx.restore();
 
@@ -455,6 +499,20 @@ async function renderTelegramDemo({
   ctx.fillStyle=dark?"#aebac1":"#80868b";
   ctx.font="25px -apple-system, BlinkMacSystemFont, Arial";
   ctx.fillText("ultimo accesso recentemente", contactX+126, topY+82);
+
+  // Mascheratura privacy come nei riferimenti.
+  if (privacyMask) {
+    const maskX = contactX + 455;
+    const maskY = topY - 12;
+    const maskW = contactW - 430;
+    const maskH = 124;
+    const maskGrad = ctx.createLinearGradient(maskX, maskY, maskX + maskW, maskY);
+    maskGrad.addColorStop(0, "rgba(0,0,0,.72)");
+    maskGrad.addColorStop(.22, "rgba(0,0,0,.96)");
+    maskGrad.addColorStop(1, "rgba(0,0,0,1)");
+    ctx.fillStyle = maskGrad;
+    roundRect(ctx, maskX, maskY, maskW, maskH, 20, true, false);
+  }
 
   // Etichetta Oggi.
   const dayY = topY + 130;
@@ -817,6 +875,9 @@ export default function LucaTradingAuto() {
 
   const [telegramScreenFile, setTelegramScreenFile] = useState(null);
   const [telegramAvatarFile, setTelegramAvatarFile] = useState(null);
+  const [telegramBackgroundFile, setTelegramBackgroundFile] = useState(null);
+  const [telegramUnreadCount, setTelegramUnreadCount] = useState("15");
+  const [telegramPrivacyMask, setTelegramPrivacyMask] = useState(true);
   const [telegramMode, setTelegramMode] = useState("daily");
   const [telegramTheme, setTelegramTheme] = useState("light");
   const [telegramName, setTelegramName] = useState("");
@@ -1227,6 +1288,10 @@ export default function LucaTradingAuto() {
       return alert("Carica prima lo screenshot.");
     }
 
+    if (!telegramAvatarFile) {
+      return alert("Carica una foto profilo: così non verrà più generata l'icona con l'iniziale.");
+    }
+
     const history = readTelegramHistory();
     const gender = telegramGender === "auto"
       ? (history.lastGender === "male" ? "female" : "male")
@@ -1253,6 +1318,9 @@ export default function LucaTradingAuto() {
     const blob = await renderTelegramDemo({
       screenshotFile: telegramScreenFile,
       avatarFile: telegramAvatarFile,
+      backgroundFile: telegramBackgroundFile,
+      unreadCount: telegramUnreadCount,
+      privacyMask: telegramPrivacyMask,
       name: selectedName,
       message: selectedMessage,
       reply: selectedReply,
@@ -1422,6 +1490,31 @@ export default function LucaTradingAuto() {
 
           <label>Foto profilo
             <input type="file" accept="image/png,image/jpeg,image/webp" onChange={e => setTelegramAvatarFile(e.target.files?.[0] || null)} />
+          </label>
+
+          <label>Sfondo chat
+            <input type="file" accept="image/png,image/jpeg,image/webp" onChange={e => setTelegramBackgroundFile(e.target.files?.[0] || null)} />
+          </label>
+
+          <label>Chat non lette
+            <input
+              type="number"
+              min="0"
+              max="999"
+              value={telegramUnreadCount}
+              onChange={e => setTelegramUnreadCount(e.target.value)}
+            />
+          </label>
+
+          <label>
+            Privacy intestazione
+            <select
+              value={telegramPrivacyMask ? "yes" : "no"}
+              onChange={e => setTelegramPrivacyMask(e.target.value === "yes")}
+            >
+              <option value="yes">Maschera nera come nei riferimenti</option>
+              <option value="no">Mostra intestazione completa</option>
+            </select>
           </label>
 
           <label>Tipo
