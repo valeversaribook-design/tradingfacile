@@ -338,102 +338,261 @@ function fileToImage(file) {
   });
 }
 
-async function renderTelegramDemo({ screenshotFile, name, message, reply, messageTime, replyTime }) {
-  const image = await fileToImage(screenshotFile);
+async function renderTelegramDemo({
+  screenshotFile,
+  avatarFile,
+  name,
+  message,
+  reply,
+  messageTime,
+  replyTime
+}) {
+  const screenshot = await fileToImage(screenshotFile);
+  const avatar = avatarFile ? await fileToImage(avatarFile) : null;
+
   const canvas = document.createElement("canvas");
-  canvas.width = 1080;
-  canvas.height = 1920;
+  canvas.width = 1170;
+  canvas.height = 2532;
   const ctx = canvas.getContext("2d");
 
-  ctx.fillStyle = "#dfe7ea";
-  ctx.fillRect(0, 0, 1080, 1920);
+  const W = canvas.width;
+  const H = canvas.height;
 
+  const demoH = 72;
+  const statusH = 88;
+  const headerH = 126;
+  const composerH = 132;
+
+  // Barra SIMULAZIONE/DEMO: unica differenza obbligatoria.
   ctx.fillStyle = "#c62828";
-  ctx.fillRect(0, 0, 1080, 74);
-  ctx.fillStyle = "#fff";
-  ctx.font = "700 30px Arial";
+  ctx.fillRect(0, 0, W, demoH);
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "700 30px -apple-system, BlinkMacSystemFont, Arial";
   ctx.textAlign = "center";
-  ctx.fillText("SIMULAZIONE / DEMO", 540, 48);
+  ctx.fillText("SIMULAZIONE / DEMO", W / 2, 47);
 
-  ctx.fillStyle = "#fff";
-  ctx.fillRect(0, 74, 1080, 138);
+  // Status bar iOS.
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, demoH, W, statusH);
+  ctx.fillStyle = "#111111";
+  ctx.font = "700 31px -apple-system, BlinkMacSystemFont, Arial";
+  ctx.textAlign = "left";
+  ctx.fillText(formatHour(messageTime), 78, demoH + 56);
+
+  ctx.textAlign = "right";
+  ctx.font = "700 27px Arial";
+  ctx.fillText("▮▮▮  5G  ▰", W - 62, demoH + 55);
+
+  // Header Telegram.
+  const headerY = demoH + statusH;
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, headerY, W, headerH);
 
   ctx.fillStyle = "#229ED9";
-  ctx.beginPath();
-  ctx.arc(72, 143, 43, 0, Math.PI * 2);
-  ctx.fill();
-
-  const initials = name.split(" ").map(x => x[0]).join("").slice(0, 2).toUpperCase();
-  ctx.fillStyle = "#fff";
-  ctx.font = "700 30px Arial";
-  ctx.textAlign = "center";
-  ctx.fillText(initials, 72, 154);
-
+  ctx.font = "700 55px Arial";
   ctx.textAlign = "left";
-  ctx.fillStyle = "#111";
-  ctx.font = "700 34px Arial";
-  ctx.fillText(name, 135, 132);
-  ctx.fillStyle = "#6b7280";
-  ctx.font = "24px Arial";
-  ctx.fillText("ultimo accesso recentemente", 135, 172);
+  ctx.fillText("‹", 34, headerY + 78);
 
-  ctx.fillStyle = "#e6ebee";
-  ctx.fillRect(0, 212, 1080, 1708);
-
-  const bubbleX = 40, bubbleY = 260, bubbleW = 820, pad = 18;
-  const maxW = bubbleW - pad * 2, maxH = 970;
-  const scale = Math.min(maxW / image.width, maxH / image.height);
-  const drawW = image.width * scale, drawH = image.height * scale;
-
-  ctx.fillStyle = "#fff";
-  roundRect(ctx, bubbleX, bubbleY, bubbleW, drawH + 190, 22, true, false);
-  ctx.drawImage(image, bubbleX + pad, bubbleY + pad, drawW, drawH);
-
-  ctx.fillStyle = "#111";
-  ctx.font = "28px Arial";
-  const words = message.split(" ");
-  let line = "", y = bubbleY + drawH + 58;
-  for (const word of words) {
-    const test = line + word + " ";
-    if (ctx.measureText(test).width > bubbleW - 40 && line) {
-      ctx.fillText(line, bubbleX + 20, y);
-      line = word + " ";
-      y += 36;
-    } else {
-      line = test;
-    }
-  }
-  ctx.fillText(line, bubbleX + 20, y);
-
-  ctx.fillStyle = "#6b7280";
-  ctx.font = "22px Arial";
-  ctx.textAlign = "right";
-  ctx.fillText(formatHour(messageTime), bubbleX + bubbleW - 20, bubbleY + drawH + 164);
-
-  const replyW = Math.min(720, Math.max(320, reply.length * 18 + 120));
-  const replyX = 1080 - replyW - 40;
-  const replyY = Math.min(1630, bubbleY + drawH + 240);
-
-  ctx.fillStyle = "#d9fdd3";
-  roundRect(ctx, replyX, replyY, replyW, 112, 22, true, false);
-  ctx.fillStyle = "#111";
-  ctx.font = "28px Arial";
-  ctx.textAlign = "left";
-  ctx.fillText(reply, replyX + 22, replyY + 46);
-  ctx.fillStyle = "#6b7280";
-  ctx.font = "22px Arial";
-  ctx.textAlign = "right";
-  ctx.fillText(`${formatHour(replyTime)}  ✓✓`, replyX + replyW - 18, replyY + 88);
+  const avatarX = 116;
+  const avatarY = headerY + 63;
+  const avatarR = 47;
 
   ctx.save();
-  ctx.translate(540, 1080);
-  ctx.rotate(-Math.PI / 8);
-  ctx.globalAlpha = 0.10;
-  ctx.fillStyle = "#b71c1c";
-  ctx.font = "700 100px Arial";
-  ctx.textAlign = "center";
-  ctx.fillText("DEMO", 0, 0);
+  ctx.beginPath();
+  ctx.arc(avatarX, avatarY, avatarR, 0, Math.PI * 2);
+  ctx.clip();
+
+  if (avatar) {
+    const scale = Math.max((avatarR * 2) / avatar.width, (avatarR * 2) / avatar.height);
+    const aw = avatar.width * scale;
+    const ah = avatar.height * scale;
+    ctx.drawImage(
+      avatar,
+      avatarX - aw / 2,
+      avatarY - ah / 2,
+      aw,
+      ah
+    );
+  } else {
+    ctx.fillStyle = "#5ca9df";
+    ctx.fillRect(avatarX - avatarR, avatarY - avatarR, avatarR * 2, avatarR * 2);
+    const initials = name.split(/\s+/).map(x => x[0] || "").join("").slice(0, 2).toUpperCase();
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "700 34px Arial";
+    ctx.textAlign = "center";
+    ctx.fillText(initials, avatarX, avatarY + 12);
+  }
   ctx.restore();
+
+  ctx.textAlign = "left";
+  ctx.fillStyle = "#111111";
+  ctx.font = "700 36px -apple-system, BlinkMacSystemFont, Arial";
+  ctx.fillText(name, 183, headerY + 54);
+
+  ctx.fillStyle = "#8b8b8f";
+  ctx.font = "25px -apple-system, BlinkMacSystemFont, Arial";
+  ctx.fillText("ultimo accesso recentemente", 183, headerY + 91);
+
+  ctx.fillStyle = "#229ED9";
+  ctx.font = "700 32px Arial";
+  ctx.textAlign = "right";
+  ctx.fillText("☎", W - 105, headerY + 76);
+  ctx.fillText("⋯", W - 38, headerY + 72);
+
+  // Sfondo Telegram chiaro con texture.
+  const chatY = headerY + headerH;
+  const chatH = H - chatY - composerH;
+  ctx.fillStyle = "#dbe5e8";
+  ctx.fillRect(0, chatY, W, chatH);
+
+  // Pattern leggero simile allo sfondo Telegram.
+  ctx.save();
+  ctx.globalAlpha = 0.055;
+  ctx.strokeStyle = "#62808b";
+  ctx.lineWidth = 2;
+  for (let y = chatY + 42; y < chatY + chatH; y += 96) {
+    for (let x = 32; x < W; x += 104) {
+      ctx.beginPath();
+      ctx.arc(x, y, 12, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(x - 16, y + 24);
+      ctx.lineTo(x + 18, y + 24);
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+
+  // Data centrale.
+  ctx.fillStyle = "rgba(72, 102, 112, .68)";
+  roundRect(ctx, W / 2 - 82, chatY + 28, 164, 50, 25, true, false);
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "700 23px -apple-system, BlinkMacSystemFont, Arial";
+  ctx.textAlign = "center";
+  ctx.fillText("oggi", W / 2, chatY + 61);
+
+  // Messaggio ricevuto con screenshot.
+  const inX = 26;
+  const inY = chatY + 110;
+  const inW = 866;
+  const pad = 12;
+  const imageW = inW - pad * 2;
+  const imageMaxH = 1420;
+  const scale = Math.min(imageW / screenshot.width, imageMaxH / screenshot.height);
+  const drawW = screenshot.width * scale;
+  const drawH = screenshot.height * scale;
+
+  // Calcolo righe del messaggio.
+  ctx.font = "31px -apple-system, BlinkMacSystemFont, Arial";
+  const msgMaxW = inW - 42;
+  const words = message.trim().split(/\s+/);
+  const lines = [];
+  let current = "";
+  for (const word of words) {
+    const candidate = current ? `${current} ${word}` : word;
+    if (ctx.measureText(candidate).width > msgMaxW && current) {
+      lines.push(current);
+      current = word;
+    } else {
+      current = candidate;
+    }
+  }
+  if (current) lines.push(current);
+
+  const messageBlockH = Math.max(54, lines.length * 39 + 22);
+  const inH = pad + drawH + messageBlockH + 50;
+
+  ctx.fillStyle = "#ffffff";
+  roundRect(ctx, inX, inY, inW, inH, 22, true, false);
+
+  // Piccola coda bolla.
+  ctx.beginPath();
+  ctx.moveTo(inX + 4, inY + inH - 28);
+  ctx.lineTo(inX - 16, inY + inH - 8);
+  ctx.lineTo(inX + 24, inY + inH - 10);
+  ctx.closePath();
+  ctx.fill();
+
+  // Immagine.
+  ctx.save();
+  roundRect(ctx, inX + pad, inY + pad, drawW, drawH, 15, false, false);
+  ctx.clip();
+  ctx.drawImage(screenshot, inX + pad, inY + pad, drawW, drawH);
+  ctx.restore();
+
+  // Testo ricevuto.
+  ctx.fillStyle = "#111111";
+  ctx.font = "31px -apple-system, BlinkMacSystemFont, Arial";
+  ctx.textAlign = "left";
+  let textY = inY + pad + drawH + 42;
+  for (const line of lines) {
+    ctx.fillText(line, inX + 22, textY);
+    textY += 39;
+  }
+
+  // Ora messaggio ricevuto.
+  ctx.fillStyle = "#8b8b8f";
+  ctx.font = "23px -apple-system, BlinkMacSystemFont, Arial";
+  ctx.textAlign = "right";
+  ctx.fillText(formatHour(messageTime), inX + inW - 18, inY + inH - 18);
+
+  // Risposta inviata.
+  ctx.font = "31px -apple-system, BlinkMacSystemFont, Arial";
+  const replyTextW = ctx.measureText(reply).width;
+  const outW = Math.min(820, Math.max(330, replyTextW + 128));
+  const outH = 104;
+  const outX = W - outW - 25;
+  const outY = Math.min(chatY + chatH - 170, inY + inH + 36);
+
+  ctx.fillStyle = "#d9fdd3";
+  roundRect(ctx, outX, outY, outW, outH, 22, true, false);
+
+  ctx.beginPath();
+  ctx.moveTo(outX + outW - 5, outY + outH - 27);
+  ctx.lineTo(outX + outW + 16, outY + outH - 8);
+  ctx.lineTo(outX + outW - 26, outY + outH - 11);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.fillStyle = "#111111";
+  ctx.font = "31px -apple-system, BlinkMacSystemFont, Arial";
+  ctx.textAlign = "left";
+  ctx.fillText(reply, outX + 22, outY + 43);
+
+  ctx.fillStyle = "#63a57c";
+  ctx.font = "23px -apple-system, BlinkMacSystemFont, Arial";
+  ctx.textAlign = "right";
+  ctx.fillText(`${formatHour(replyTime)}  ✓✓`, outX + outW - 18, outY + 82);
+
+  // Composer inferiore Telegram.
+  const composerY = H - composerH;
+  ctx.fillStyle = "#f7f7f8";
+  ctx.fillRect(0, composerY, W, composerH);
+  ctx.strokeStyle = "#d1d1d3";
+  ctx.beginPath();
+  ctx.moveTo(0, composerY);
+  ctx.lineTo(W, composerY);
+  ctx.stroke();
+
+  ctx.fillStyle = "#ffffff";
+  ctx.strokeStyle = "#d1d1d3";
+  ctx.lineWidth = 2;
+  roundRect(ctx, 82, composerY + 22, W - 178, 76, 38, true, true);
+
+  ctx.fillStyle = "#8d8d92";
+  ctx.font = "30px -apple-system, BlinkMacSystemFont, Arial";
+  ctx.textAlign = "left";
+  ctx.fillText("Messaggio", 113, composerY + 70);
+
+  ctx.fillStyle = "#229ED9";
+  ctx.font = "700 38px Arial";
+  ctx.fillText("+", 25, composerY + 72);
+  ctx.textAlign = "right";
+  ctx.fillText("🎤", W - 32, composerY + 72);
+
+  // Home indicator.
+  ctx.fillStyle = "#111111";
+  roundRect(ctx, W / 2 - 145, H - 18, 290, 8, 4, true, false);
 
   return new Promise(resolve => canvas.toBlob(resolve, "image/png"));
 }
@@ -714,6 +873,7 @@ export default function LucaTradingAuto() {
   const [usedCandleKeys, setUsedCandleKeys] = useState([]);
 
   const [telegramScreenFile, setTelegramScreenFile] = useState(null);
+  const [telegramAvatarFile, setTelegramAvatarFile] = useState(null);
   const [telegramMode, setTelegramMode] = useState("daily");
   const [telegramName, setTelegramName] = useState("");
   const [telegramGender, setTelegramGender] = useState("auto");
@@ -1148,6 +1308,7 @@ export default function LucaTradingAuto() {
 
     const blob = await renderTelegramDemo({
       screenshotFile: telegramScreenFile,
+      avatarFile: telegramAvatarFile,
       name: selectedName,
       message: selectedMessage,
       reply: selectedReply,
@@ -1303,7 +1464,7 @@ export default function LucaTradingAuto() {
       <section className="panel">
         <h2>4. Generatore demo Telegram</h2>
         <p className="hint">
-          Genera un mockup chiaramente marcato SIMULAZIONE/DEMO.
+          Genera un mockup Telegram fedele ai riferimenti, con la sola barra superiore SIMULAZIONE/DEMO.
           Giornaliero: invio dopo l'ultima chiusura. Settimanale: invio casuale tra 09:00 e 18:00.
           La risposta non è mai immediata.
         </p>
@@ -1311,6 +1472,10 @@ export default function LucaTradingAuto() {
         <div className="grid">
           <label>Screenshot
             <input type="file" accept="image/png,image/jpeg,image/webp" onChange={e => setTelegramScreenFile(e.target.files?.[0] || null)} />
+          </label>
+
+          <label>Foto profilo
+            <input type="file" accept="image/png,image/jpeg,image/webp" onChange={e => setTelegramAvatarFile(e.target.files?.[0] || null)} />
           </label>
 
           <label>Tipo
