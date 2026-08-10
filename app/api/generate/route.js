@@ -28,46 +28,103 @@ function signature(candle) {
   ].join("|");
 }
 
-function ohlcValues(candle) {
-  return [
-    { label: "open", value: Number(candle.open) },
-    { label: "high", value: Number(candle.high) },
-    { label: "low", value: Number(candle.low) },
-    { label: "close", value: Number(candle.close) }
-  ];
+function bodyInteriorRange(candle) {
+  // Regola: il prezzo deve stare SEMPRE dentro il corpo della candela,
+  // quindi strettamente tra OPEN e CLOSE. Mai OPEN, CLOSE, HIGH o LOW.
+  const a = Number(candle.open);
+  const b = Number(candle.close);
+
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+
+  const low = Math.min(a, b);
+  const high = Math.max(a, b);
+
+  // Gli screen mostrano 2 decimali: lavoriamo direttamente a centesimi.
+  // +1 / -1 escludono rigorosamente i due estremi open/close.
+  const minCent = Math.floor(low * 100) + 1;
+  const maxCent = Math.ceil(high * 100) - 1;
+
+  if (minCent > maxCent) return null;
+
+  return {
+    minCent,
+    maxCent,
+    min: minCent / 100,
+    max: maxCent / 100
+  };
 }
 
-function nearestOHLC(candle, target) {
-  const values = ohlcValues(candle);
-  if (target === null || Number.isNaN(target)) return choose(values);
+function randomInteriorPrice(candle) {
+  const range = bodyInteriorRange(candle);
+  if (!range) return null;
 
-  return values.reduce((best, item) =>
-    Math.abs(item.value - target) < Math.abs(best.value - target)
-      ? item
-      : best
-  , values[0]);
+  const cent = randInt(range.minCent, range.maxCent);
+  return {
+    value: cent / 100,
+    source: "intermedio"
+  };
+}
+
+function nearestInteriorPrice(candle, target) {
+  const range = bodyInteriorRange(candle);
+  if (!range) return null;
+
+  const targetCent = Math.round(Number(target) * 100);
+  const cent = Math.max(range.minCent, Math.min(range.maxCent, targetCent));
+
+  return {
+    value: cent / 100,
+    source: "intermedio",
+    distance: Math.abs(cent - targetCent)
+  };
 }
 
 function pickCandleNear(pool, target, startIndex, endIndex) {
   const from = Math.max(0, startIndex);
   const to = Math.min(pool.length - 1, endIndex);
+  if (from > to) return null;
+
+  // Se non c'è un target, scegli una candela casuale che abbia
+  // almeno un prezzo a 2 decimali strettamente tra open e close.
+  if (target === null || Number.isNaN(target)) {
+    const candidates = [];
+
+    for (let index = from; index <= to; index += 1) {
+      const selected = randomInteriorPrice(pool[index]);
+      if (!selected) continue;
+
+      candidates.push({
+        index,
+        candle: pool[index],
+        value: selected.value,
+        source: selected.source,
+        distance: 0
+      });
+    }
+
+    if (!candidates.length) return null;
+    return choose(candidates);
+  }
+
+  // Se l'utente inserisce un prezzo scenario, cerca la candela il cui
+  // corpo contiene quel prezzo. Se non esiste, usa il valore INTERNO
+  // più vicino possibile, senza mai toccare open/close/high/low.
   let best = null;
 
   for (let index = from; index <= to; index += 1) {
-    const candle = pool[index];
-    const nearest = nearestOHLC(candle, target);
-    const distance = target === null || Number.isNaN(target)
-      ? Math.random()
-      : Math.abs(nearest.value - target);
+    const selected = nearestInteriorPrice(pool[index], target);
+    if (!selected) continue;
 
-    if (!best || distance < best.distance) {
+    if (!best || selected.distance < best.distance) {
       best = {
         index,
-        candle,
-        value: nearest.value,
-        source: nearest.label,
-        distance
+        candle: pool[index],
+        value: selected.value,
+        source: selected.source,
+        distance: selected.distance
       };
+
+      if (selected.distance === 0) break;
     }
   }
 
@@ -110,45 +167,33 @@ function buildTrade({
     let openPick;
     let closePick;
 
-    if (openTarget !== null) {
-      openPick = pickCandleNear(available, openTarget, 0, available.length - 2);
-    } else {
-      const index = randInt(0, available.length - 2);
-      const candle = available[index];
-      const selected = choose(ohlcValues(candle));
-      openPick = {
-        index,
-        candle,
-        value: selected.value,
-        source: selected.label
-      };
-    }
+    openPick = pickCandleNear(
+      available,
+      openTarget,
+      0,
+      available.length - 2
+    );
 
     if (!openPick) continue;
 
-    if (closeTarget !== null) {
-      closePick = pickCandleNear(
-        available,
-        closeTarget,
-        openPick.index + 1,
-        available.length - 1
-      );
-    } else {
-      const index = randInt(openPick.index + 1, available.length - 1);
-      const candle = available[index];
-      const selected = choose(ohlcValues(candle));
-      closePick = {
-        index,
-        candle,
-        value: selected.value,
-        source: selected.label
-      };
-    }
+    closePick = pickCandleNear(
+      available,
+      closeTarget,
+      openPick.index + 1,
+      available.length - 1
+    );
 
     if (!closePick) continue;
 
-    const entry = Number(openPick.value);
-    const exit = Number(closePick.value);
+    const entry = Number(Number(openPick.value).toFixed(2));
+    const exit = Number(Number(closePick.value).toFixed(2));
+
+    const openRange = bodyInteriorRange(openPick.candle);
+    const closeRange = bodyInteriorRange(closePick.candle);
+
+    if (!openRange || !closeRange) continue;
+    if (entry < openRange.min || entry > openRange.max) continue;
+    if (exit < closeRange.min || exit > closeRange.max) continue;
 
     let side = scenario?.side && scenario.side !== "auto"
       ? scenario.side
