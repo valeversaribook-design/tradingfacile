@@ -258,8 +258,12 @@ function renderLucaLayoutBlob(trades, layout, deposit, credit, withdrawal) {
   const isDark = layout.endsWith("dark");
   if (!isAndroid && !isIOS) return null;
 
-  const totalProfit = trades.reduce((a, t) => a + Number(t.profit || 0), 0);
-  const balance = Number(deposit || 0) + Number(credit || 0) - Number(withdrawal || 0) + totalProfit;
+  const ordered = [...trades].sort((a, b) => new Date(a.closeTime) - new Date(b.closeTime));
+  const totalProfit = ordered.reduce((sum, t) => sum + Number(t.profit || 0), 0);
+  const depositValue = Number(deposit || 0);
+  const creditValue = Number(credit || 0);
+  const withdrawalValue = Number(withdrawal || 0);
+  const balance = depositValue + creditValue - withdrawalValue + totalProfit;
 
   const canvas = document.createElement("canvas");
   canvas.width = 828;
@@ -267,155 +271,393 @@ function renderLucaLayoutBlob(trades, layout, deposit, credit, withdrawal) {
   const ctx = canvas.getContext("2d");
 
   const bg = isDark ? "#000000" : "#ffffff";
-  const text = isDark ? "#f4f4f4" : "#161616";
-  const muted = isDark ? "#bfc0c2" : "#626262";
-  const line = isDark ? "#242424" : "#e5e5e5";
-  const blue = "#2196f3";
-  const red = "#e62b38";
-  const navBg = isDark ? "#0a0a0a" : "#fbfbfb";
-  const navSelected = isDark ? "#22262e" : "#dfe9ff";
+  const text = isDark ? "#f4f4f4" : "#111111";
+  const muted = isDark ? "#b9b9bd" : "#5e5e63";
+  const line = isDark ? "#28282a" : "#e4e4e6";
+  const blue = "#0a84ff";
+  const red = "#ff3b30";
+  const green = "#34c759";
+  const navBg = isDark ? "#090909" : "#ffffff";
+  const pill = isDark ? "#2a2a2d" : "#ececef";
 
   ctx.fillStyle = bg;
-  ctx.fillRect(0, 0, 828, 1792);
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  function txt(str, x, y, size=24, weight="400", color=text, align="left") {
-    ctx.font = `${weight} ${size}px Arial`;
+  function font(size, weight = "400") {
+    ctx.font = `${weight} ${size}px -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif`;
+  }
+
+  function txt(value, x, y, size = 24, weight = "400", color = text, align = "left") {
+    font(size, weight);
     ctx.fillStyle = color;
     ctx.textAlign = align;
     ctx.textBaseline = "alphabetic";
-    ctx.fillText(String(str), x, y);
+    ctx.fillText(String(value), x, y);
     ctx.textAlign = "left";
   }
-  function hline(y, x1=0, x2=828, width=1) {
-    ctx.strokeStyle = line; ctx.lineWidth = width; ctx.beginPath(); ctx.moveTo(x1,y); ctx.lineTo(x2,y); ctx.stroke();
-  }
-  function rr(x,y,w,h,r,fill) {
-    ctx.fillStyle = fill; roundRect(ctx,x,y,w,h,r,true,false);
+
+  function hline(y, x1 = 0, x2 = 828, width = 1) {
+    ctx.strokeStyle = line;
+    ctx.lineWidth = width;
+    ctx.beginPath();
+    ctx.moveTo(x1, y);
+    ctx.lineTo(x2, y);
+    ctx.stroke();
   }
 
-  const ordered = [...trades].sort((a,b)=>new Date(a.closeTime)-new Date(b.closeTime));
+  function rr(x, y, w, h, r, fill, stroke = null, strokeWidth = 1) {
+    roundRect(ctx, x, y, w, h, r, false, false);
+    if (fill) {
+      ctx.fillStyle = fill;
+      ctx.fill();
+    }
+    if (stroke) {
+      ctx.strokeStyle = stroke;
+      ctx.lineWidth = strokeWidth;
+      ctx.stroke();
+    }
+  }
 
+  function dot(x, y, r, fill) {
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fillStyle = fill;
+    ctx.fill();
+  }
+
+  function drawSignal(x, y, color) {
+    ctx.fillStyle = color;
+    const heights = [8, 13, 18, 24];
+    heights.forEach((h, i) => ctx.fillRect(x + i * 9, y - h, 6, h));
+  }
+
+  function drawWifi(x, y, color) {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 4;
+    ctx.lineCap = "round";
+    [24, 16, 8].forEach((r, i) => {
+      ctx.beginPath();
+      ctx.arc(x, y, r, Math.PI * 1.12, Math.PI * 1.88);
+      ctx.stroke();
+    });
+    dot(x, y + 2, 3, color);
+  }
+
+  function drawBattery(x, y, pct = "75") {
+    const w = 55, h = 26;
+    rr(x, y, w, h, 7, isIOS ? green : null, isIOS ? null : muted, 2);
+    if (!isIOS) {
+      rr(x + 4, y + 4, w * 0.72, h - 8, 3, muted);
+    }
+    ctx.fillStyle = muted;
+    ctx.fillRect(x + w + 3, y + 8, 4, 10);
+    if (isIOS) txt(pct, x + w / 2, y + 20, 19, "700", "#ffffff", "center");
+  }
+
+  function drawGear(cx, cy, color) {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.arc(cx, cy, 13, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(cx, cy, 4, 0, Math.PI * 2);
+    ctx.stroke();
+    for (let i = 0; i < 8; i++) {
+      const a = i * Math.PI / 4;
+      ctx.beginPath();
+      ctx.moveTo(cx + Math.cos(a) * 15, cy + Math.sin(a) * 15);
+      ctx.lineTo(cx + Math.cos(a) * 21, cy + Math.sin(a) * 21);
+      ctx.stroke();
+    }
+  }
+
+  function drawCandles(cx, cy, color) {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 3;
+    [[-13, -18, 8, 25], [0, -8, 8, 22], [13, -20, 8, 28]].forEach(([dx, dy, w, h]) => {
+      ctx.beginPath();
+      ctx.moveTo(cx + dx + w / 2, cy + dy - 7);
+      ctx.lineTo(cx + dx + w / 2, cy + dy + h + 7);
+      ctx.stroke();
+      ctx.strokeRect(cx + dx, cy + dy, w, h);
+    });
+  }
+
+  function drawTradeIcon(cx, cy, color) {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 4;
+    ctx.lineJoin = "round";
+    ctx.beginPath();
+    ctx.moveTo(cx - 19, cy + 12);
+    ctx.lineTo(cx - 6, cy - 2);
+    ctx.lineTo(cx + 3, cy + 5);
+    ctx.lineTo(cx + 20, cy - 17);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(cx + 10, cy - 17);
+    ctx.lineTo(cx + 20, cy - 17);
+    ctx.lineTo(cx + 20, cy - 7);
+    ctx.stroke();
+  }
+
+  function drawHistoryIcon(cx, cy, color) {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 4;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.arc(cx, cy, 18, -Math.PI * 0.15, Math.PI * 1.55);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(cx - 18, cy - 9);
+    ctx.lineTo(cx - 25, cy - 10);
+    ctx.lineTo(cx - 21, cy - 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx, cy - 11);
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + 9, cy + 5);
+    ctx.stroke();
+  }
+
+  function drawQuotesIcon(cx, cy, color) {
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(cx - 9, cy + 14);
+    ctx.lineTo(cx - 9, cy - 14);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(cx - 15, cy - 7);
+    ctx.lineTo(cx - 9, cy - 14);
+    ctx.lineTo(cx - 3, cy - 7);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(cx + 9, cy - 14);
+    ctx.lineTo(cx + 9, cy + 14);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(cx + 3, cy + 7);
+    ctx.lineTo(cx + 9, cy + 14);
+    ctx.lineTo(cx + 15, cy + 7);
+    ctx.stroke();
+  }
+
+  function drawAndroidSystemBar() {
+    const y = 1727;
+    ctx.fillStyle = "#000000";
+    ctx.fillRect(0, y, 828, 65);
+    ctx.strokeStyle = "#bcbcbc";
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(165, 1759); ctx.lineTo(187, 1746); ctx.lineTo(187, 1772); ctx.closePath(); ctx.stroke();
+    ctx.beginPath(); ctx.arc(414, 1759, 12, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeRect(648, 1748, 23, 23);
+  }
+
+  function fmtPrice(v) {
+    return Number(v).toFixed(2);
+  }
+
+  // =========================
+  // LUCA ANDROID
+  // =========================
   if (isAndroid) {
-    // ANDROID: replica del riferimento "Storico / Tutti i simboli"
-    // Status bar molto compatta
-    txt("11:11", 18, 35, 24, "700", text);
-    txt("▮▮▮", 718, 35, 22, "700", text);
-    txt("4G", 762, 35, 20, "700", text);
-    txt("▰", 807, 35, 15, "700", text, "right");
+    // Status bar, proporzioni del riferimento Android allegato.
+    txt("11:11", 18, 34, 22, "700", text);
+    drawSignal(704, 31, text);
+    txt("4G", 751, 34, 18, "700", text);
+    drawBattery(783, 12, "75");
 
-    // Header app
-    txt("☰", 20, 81, 27, "400", muted);
-    txt("Storico", 58, 64, 28, "700", text);
-    txt("Tutti i simboli", 58, 96, 20, "400", muted);
-    txt("$", 713, 78, 20, "700", muted);
-    txt("↕", 758, 78, 24, "400", muted);
-    txt("▦", 806, 78, 22, "400", muted, "right");
+    // Header "Storico / Tutti i simboli"
+    txt("☰", 20, 83, 27, "600", muted);
+    txt("Storico", 59, 65, 27, "700", text);
+    txt("Tutti i simboli", 59, 96, 20, "400", muted);
+    txt("$", 704, 77, 20, "700", muted);
+    txt("↕", 756, 78, 25, "500", muted);
+    txt("▦", 807, 78, 23, "500", muted, "right");
     hline(115);
 
-    // Summary in alto: SOLO Profitto e Bilancio come nel riferimento
-    const sy=145;
-    [["Profitto:",totalProfit,true],["Bilancio:",balance,false]].forEach((r,i)=>{
-      const y=sy+i*35;
-      txt(r[0],24,y,27,"700",text);
-      ctx.strokeStyle=isDark?"#424242":"#c8c8c8"; ctx.setLineDash([2,6]); ctx.lineWidth=2;
-      ctx.beginPath(); ctx.moveTo(148,y-9); ctx.lineTo(687,y-9); ctx.stroke(); ctx.setLineDash([]);
-      txt(money(r[1]),806,y,27,"700",r[2]?blue:text,"right");
+    // Profitto/Bilancio in alto, con puntinatura.
+    const sumRows = [
+      ["Profitto:", totalProfit, true],
+      ["Bilancio:", balance, false]
+    ];
+    sumRows.forEach((row, i) => {
+      const y = 146 + i * 35;
+      txt(row[0], 23, y, 26, "700", text);
+      ctx.strokeStyle = isDark ? "#444448" : "#c8c8ca";
+      ctx.lineWidth = 2;
+      ctx.setLineDash([2, 7]);
+      ctx.beginPath();
+      ctx.moveTo(150, y - 8);
+      ctx.lineTo(690, y - 8);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      txt(money(row[1]), 805, y, 27, "700", row[2] ? blue : text, "right");
     });
     hline(204);
 
-    // Righe operazioni
-    const startY=205;
-    const rowH=92;
-    const maxRows=Math.min(ordered.length, Math.floor((1555-startY)/rowH));
-    ordered.slice(0,maxRows).forEach((t,i)=>{
-      const y=startY+i*rowH;
-      const sideColor=t.side==="buy"?blue:red;
-      const profitColor=Number(t.profit)>=0?blue:red;
-      txt("XAUUSD,",20,y+40,25,"700",text);
-      const sw=ctx.measureText("XAUUSD,").width;
-      txt(`${t.side} ${Number(t.lot).toFixed(2)}`,20+sw+7,y+40,25,"700",sideColor);
-      txt(reportDate(t.closeTime),808,y+39,21,"700",muted,"right");
-      txt(`${price(t.entry)} → ${price(t.exit)}`,20,y+72,25,"400",muted);
-      txt(money(t.profit),808,y+72,25,"700",profitColor,"right");
-      hline(y+rowH);
+    const startY = 205;
+    const rowH = 93;
+    const navTop = 1572;
+    const maxRows = Math.min(ordered.length, Math.floor((navTop - startY) / rowH));
+
+    ordered.slice(0, maxRows).forEach((t, i) => {
+      const y = startY + i * rowH;
+      const sideColor = t.side === "buy" ? blue : red;
+      const profitColor = Number(t.profit) >= 0 ? blue : red;
+
+      // sottile barra laterale colorata come nei riferimenti Android.
+      ctx.fillStyle = Number(t.profit) >= 0 ? "#8bc34a" : red;
+      ctx.fillRect(0, y + 1, 5, rowH - 2);
+
+      txt("XAUUSD,", 20, y + 39, 25, "700", text);
+      font(25, "700");
+      const symbolW = ctx.measureText("XAUUSD,").width;
+      txt(`${t.side} ${Number(t.lot).toFixed(2)}`, 20 + symbolW + 7, y + 39, 25, "700", sideColor);
+      txt(reportDate(t.closeTime), 807, y + 37, 20, "700", muted, "right");
+      txt(`${fmtPrice(t.entry)} → ${fmtPrice(t.exit)}`, 20, y + 70, 24, "400", muted);
+      txt(money(t.profit), 807, y + 70, 24, "700", profitColor, "right");
+      hline(y + rowH);
     });
 
-    // Bottom app navigation: 6 icone senza pill iOS, come Android MT
-    const navTop=1588;
-    ctx.fillStyle=navBg; ctx.fillRect(0,navTop,828,204);
+    // Barra app Android: 5 voci, Storico selezionato.
+    ctx.fillStyle = navBg;
+    ctx.fillRect(0, navTop, 828, 155);
     hline(navTop);
-    const icons=["↗","▥","↗","▰","▤","●"];
-    const labels=["Quotazioni","Grafico","Operazioni","Storico",""," "];
-    icons.forEach((ic,i)=>{
-      const x=70+i*137;
-      txt(ic,x,1648,31,"700",i===3?blue:muted,"center");
-      if(i<4) txt(labels[i],x,1693,17,"700",i===3?blue:muted,"center");
+    const navItems = [
+      ["quotes", "Quotazioni"],
+      ["candles", "Grafico"],
+      ["trade", "Operazioni"],
+      ["history", "Storico"],
+      ["gear", "Impostazioni"]
+    ];
+    navItems.forEach((item, i) => {
+      const x = 76 + i * 169;
+      const selected = i === 3;
+      const c = selected ? blue : muted;
+      if (selected) rr(x - 53, navTop + 16, 106, 72, 18, isDark ? "#20242b" : "#dce8ff");
+      if (item[0] === "quotes") drawQuotesIcon(x, navTop + 48, c);
+      if (item[0] === "candles") drawCandles(x, navTop + 48, c);
+      if (item[0] === "trade") drawTradeIcon(x, navTop + 48, c);
+      if (item[0] === "history") drawHistoryIcon(x, navTop + 48, c);
+      if (item[0] === "gear") drawGear(x, navTop + 48, c);
+      txt(item[1], x, navTop + 120, 17, "700", c, "center");
     });
-    // barra sistema Android
-    txt("◁",170,1764,33,"400",muted,"center");
-    txt("○",414,1764,34,"400",muted,"center");
-    txt("□",658,1764,30,"400",muted,"center");
+    drawAndroidSystemBar();
   }
 
+  // =========================
+  // LUCA iOS
+  // =========================
   if (isIOS) {
-    // IOS: replica del riferimento con tab Posizioni / Ordini / Affari
-    txt("20:15",38,54,30,"700",text);
-    txt("▮▮▮",675,54,26,"700",text);
-    txt("5G",730,54,25,"700",text);
-    txt("▰",792,54,17,"700",text,"right");
+    // Status bar identica geometria al riferimento iOS bianco.
+    txt("17:48", 84, 72, 34, "700", text);
+    // icona silenzioso semplificata ma nella stessa posizione.
+    txt("◕", 196, 71, 27, "700", text);
+    drawSignal(598, 69, text);
+    drawWifi(671, 65, text);
+    drawBattery(707, 48, "75");
 
-    const tabsY=92;
-    txt("Posizioni",270,tabsY,25,"700",text,"center");
-    txt("Ordini",414,tabsY,25,"400",muted,"center");
-    txt("Affari",575,tabsY,25,"400",muted,"center");
-    hline(116);
+    // Pulsante sinistro circolare.
+    rr(34, 124, 94, 94, 47, isDark ? "#171719" : "#ffffff", isDark ? "#202023" : "#f6f6f7", 1);
+    txt("↕", 81, 187, 38, "700", text, "center");
+    txt("≡", 99, 187, 30, "700", text, "center");
 
-    const startY=117;
-    const rowH=67;
-    const summaryTop=1392;
-    const maxRows=Math.min(ordered.length, Math.floor((summaryTop-startY)/rowH));
-    ordered.slice(0,maxRows).forEach((t,i)=>{
-      const y=startY+i*rowH;
-      const sideColor=t.side==="buy"?blue:red;
-      const profitColor=Number(t.profit)>=0?blue:red;
-      txt("XAUUSD,",17,y+32,21,"700",text);
-      const sw=ctx.measureText("XAUUSD,").width;
-      txt(`${t.side} ${Number(t.lot).toFixed(2)}`,17+sw+5,y+32,21,"700",sideColor);
-      txt(reportDate(t.closeTime),808,y+32,18,"700",muted,"right");
-      txt(`${price(t.entry)} → ${price(t.exit)}`,17,y+56,19,"400",muted);
-      txt(money(t.profit),808,y+56,20,"700",profitColor,"right");
-      hline(y+rowH);
+    // Segmented control centrale.
+    rr(165, 123, 503, 97, 49, isDark ? "#171719" : "#ffffff", isDark ? "#202023" : "#f5f5f6", 1);
+    rr(176, 132, 149, 79, 39, pill);
+    txt("Posizioni", 250, 183, 29, "500", text, "center");
+    txt("Ordini", 414, 183, 29, "400", text, "center");
+    txt("Affari", 578, 183, 29, "400", text, "center");
+
+    // Pulsante orologio destro.
+    rr(704, 124, 94, 94, 47, isDark ? "#171719" : "#ffffff", isDark ? "#202023" : "#f6f6f7", 1);
+    ctx.strokeStyle = text;
+    ctx.lineWidth = 5;
+    ctx.beginPath(); ctx.arc(751, 171, 22, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(751, 171); ctx.lineTo(751, 155); ctx.moveTo(751, 171); ctx.lineTo(762, 179); ctx.stroke();
+
+    // Balance + timestamp superiore, presente nel riferimento.
+    txt("Balance", 13, 289, 31, "500", text);
+    const headerBalance = depositValue || balance;
+    txt(money(headerBalance), 817, 289, 34, "700", blue, "right");
+    const headerTime = ordered.length ? reportDate(ordered[0].openTime || ordered[0].closeTime) : reportDate(new Date());
+    txt(headerTime, 817, 337, 27, "400", muted, "right");
+
+    // Operazioni: nessuna linea orizzontale; aria e proporzioni come screenshot.
+    const startY = 369;
+    const rowH = 121;
+    const summaryReserve = 280;
+    const navTop = 1627;
+    const summaryBottom = navTop - 38;
+    const maxRows = Math.min(ordered.length, Math.floor((summaryBottom - summaryReserve - startY) / rowH));
+    const visible = ordered.slice(0, Math.max(1, maxRows));
+
+    visible.forEach((t, i) => {
+      const y = startY + i * rowH;
+      const sideColor = t.side === "buy" ? blue : red;
+      const profitColor = Number(t.profit) >= 0 ? blue : red;
+
+      if (Number(t.profit) < 0) {
+        ctx.fillStyle = "#ef6359";
+        ctx.fillRect(0, y + 4, 6, rowH - 8);
+      }
+
+      txt("XAUUSD", 13, y + 40, 28, "700", text);
+      font(28, "700");
+      const symbolW = ctx.measureText("XAUUSD").width;
+      txt(`${t.side} ${Number(t.lot).toFixed(2)}`, 13 + symbolW + 8, y + 40, 28, "700", sideColor);
+      txt(money(t.profit), 817, y + 40, 30, "700", profitColor, "right");
+      txt(`${fmtPrice(t.entry)} → ${fmtPrice(t.exit)}`, 13, y + 87, 27, "400", muted);
+      txt(reportDate(t.closeTime), 817, y + 87, 26, "400", muted, "right");
     });
 
-    // Riepilogo basso iOS
-    hline(summaryTop);
-    const summaryRows=[
-      ["Deposito",Number(deposit||0)],
-      ["Profitto",totalProfit],
-      ["Swap",0],
-      ["Commissione",0],
-      ["Bilancio",balance]
+    // Riepilogo immediatamente sotto l'ultima operazione, ma mai troppo in basso.
+    let summaryY = startY + visible.length * rowH + 22;
+    summaryY = Math.min(summaryY, summaryBottom - 215);
+    const summaryRows = [
+      ["Deposito", depositValue],
+      ["Profitto", totalProfit],
+      ["Swap", 0],
+      ["Commissione", 0],
+      ["Bilancio", balance]
     ];
-    summaryRows.forEach((r,i)=>{
-      const y=1433+i*38;
-      txt(r[0],20,y,24,i===4?"700":"400",text);
-      txt(money(r[1]),808,y,24,i===4?"700":"400",text,"right");
+    summaryRows.forEach((row, i) => {
+      const y = summaryY + i * 49;
+      txt(row[0], 13, y, 29, i === 4 ? "500" : "400", text);
+      txt(money(row[1]), 817, y, 29, i === 4 ? "500" : "400", text, "right");
     });
 
-    // Bottom tab bar iOS, con pill SOLO su Storico e home indicator
-    const navTop=1643;
-    ctx.fillStyle=navBg; ctx.fillRect(0,navTop,828,149);
-    hline(navTop);
-    const items=[
-      ["↕","Quotazioni"],["▥","Chart"],["↗","Trade"],["◎","Storico"],["⚙","Impostazioni"]
+    // Bottom iOS flottante, arrotondata come il riferimento.
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, navTop - 22, 828, 187);
+    rr(44, navTop, 744, 132, 66, isDark ? "#0c0c0d" : "#ffffff", isDark ? "#111113" : "#f4f4f5", 1);
+    const items = [
+      ["quotes", "Quotazioni"],
+      ["candles", "Chart"],
+      ["trade", "Trade"],
+      ["history", "Storico"],
+      ["gear", "Impostazioni"]
     ];
-    items.forEach((it,i)=>{
-      const x=70+i*172;
-      if(i===3) rr(x-50,1654,100,72,24,navSelected);
-      txt(it[0],x,1693,31,"500",i===3?blue:muted,"center");
-      txt(it[1],x,1734,17,"700",i===3?blue:muted,"center");
+    items.forEach((item, i) => {
+      const x = 132 + i * 137;
+      const selected = i === 3;
+      const c = selected ? blue : text;
+      if (selected) rr(x - 62, navTop + 9, 124, 112, 56, pill);
+      if (item[0] === "quotes") drawQuotesIcon(x, navTop + 48, c);
+      if (item[0] === "candles") drawCandles(x, navTop + 48, c);
+      if (item[0] === "trade") drawTradeIcon(x, navTop + 48, c);
+      if (item[0] === "history") drawHistoryIcon(x, navTop + 48, c);
+      if (item[0] === "gear") drawGear(x, navTop + 48, c);
+      txt(item[1], x, navTop + 103, 20, selected ? "500" : "400", c, "center");
     });
-    rr(281,1770,266,7,4,isDark?"#f5f5f5":"#000000");
+
+    // Home indicator.
+    rr(281, 1766, 266, 7, 4, isDark ? "#ffffff" : "#000000");
   }
 
   return new Promise(resolve => canvas.toBlob(resolve, "image/png"));
