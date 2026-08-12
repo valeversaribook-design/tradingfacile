@@ -251,7 +251,192 @@ function saveUsedCandlesToday(usedSet) {
 }
 
 
+
+function renderLucaReportBlob(trades, layout, tab, deposit, credit, withdrawal) {
+  const isDark = layout.includes("dark");
+  const isAndroid = layout.includes("android");
+  const totalProfit = trades.reduce((a, t) => a + Number(t.profit || 0), 0);
+  const balance = Number(deposit || 0) + Number(credit || 0) - Number(withdrawal || 0) + totalProfit;
+
+  const canvas = document.createElement("canvas");
+  canvas.width = 828;
+  canvas.height = 1792;
+  const ctx = canvas.getContext("2d");
+
+  const bg = isDark ? "#050505" : "#ffffff";
+  const text = isDark ? "#f3f3f3" : "#161616";
+  const muted = isDark ? "#b8b8b8" : "#666666";
+  const line = isDark ? "#242424" : "#e4e4e4";
+  const blue = "#2997ff";
+  const red = "#e22b36";
+  const navBg = isDark ? "#0d0d0d" : "#fbfbfb";
+  const selectedBg = isDark ? "#20242b" : "#dfe9ff";
+
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, 828, 1792);
+
+  function drawText(str, x, y, size = 24, weight = "400", color = text, align = "left") {
+    ctx.font = `${weight} ${size}px Arial`;
+    ctx.fillStyle = color;
+    ctx.textAlign = align;
+    ctx.fillText(String(str), x, y);
+    ctx.textAlign = "left";
+  }
+
+  function lineY(y, x1 = 0, x2 = 828) {
+    ctx.strokeStyle = line;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x1, y);
+    ctx.lineTo(x2, y);
+    ctx.stroke();
+  }
+
+  function fitRows(startY, bottomY, preferred, minimum) {
+    if (!trades.length) return { rowH: preferred, rows: [] };
+    const fit = Math.floor((bottomY - startY) / trades.length);
+    const rowH = Math.max(minimum, Math.min(preferred, fit));
+    const max = Math.max(1, Math.floor((bottomY - startY) / rowH));
+    return { rowH, rows: trades.slice(0, max) };
+  }
+
+  if (isAndroid) {
+    // LUCA Android: storico MetaTrader compatto, come nel riferimento Android.
+    drawText("11:11", 18, 35, 22, "700");
+    drawText("▮▮▮  4G  ▰", 810, 35, 19, "700", text, "right");
+
+    drawText("☰", 18, 79, 27, "700", muted);
+    drawText("Storico", 58, 66, 25, "700");
+    drawText("Tutti i simboli", 58, 96, 19, "400", muted);
+    drawText("$", 710, 78, 20, "700", muted);
+    drawText("↕", 754, 78, 22, "700", muted);
+    drawText("▦", 806, 78, 22, "700", muted, "right");
+    lineY(116);
+
+    const summaryTop = 145;
+    [["Profitto:", totalProfit], ["Bilancio:", balance]].forEach((r, i) => {
+      const y = summaryTop + i * 34;
+      drawText(r[0], 24, y, 25, "700", text);
+      ctx.strokeStyle = isDark ? "#3b3b3b" : "#cfcfcf";
+      ctx.setLineDash([2, 6]);
+      ctx.beginPath();
+      ctx.moveTo(150, y - 8);
+      ctx.lineTo(690, y - 8);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      drawText(money(r[1]), 805, y, 25, "700", i === 0 ? blue : text, "right");
+    });
+    lineY(205);
+
+    const startY = 215;
+    const bottomNavTop = 1590;
+    const info = fitRows(startY, bottomNavTop - 20, 92, 64);
+    info.rows.forEach((t, i) => {
+      const y = startY + i * info.rowH;
+      lineY(y + info.rowH);
+      const scale = Math.min(1, info.rowH / 92);
+      const titleY = y + Math.max(25, 31 * scale);
+      const priceY = y + Math.max(52, 65 * scale);
+      const sideColor = t.side === "buy" ? blue : red;
+      const profitColor = Number(t.profit) >= 0 ? blue : red;
+      drawText("XAUUSD, ", 20, titleY, Math.max(20, 23 * scale), "700");
+      const sw = ctx.measureText("XAUUSD, ").width;
+      drawText(`${t.side} ${Number(t.lot).toFixed(2)}`, 20 + sw, titleY, Math.max(20, 23 * scale), "700", sideColor);
+      drawText(reportDate(t.closeTime), 806, titleY, Math.max(17, 20 * scale), "700", muted, "right");
+      drawText(`${price(t.entry)} → ${price(t.exit)}`, 20, priceY, Math.max(19, 23 * scale), "400", muted);
+      drawText(money(t.profit), 806, priceY, Math.max(19, 23 * scale), "700", profitColor, "right");
+    });
+
+    ctx.fillStyle = navBg;
+    ctx.fillRect(0, bottomNavTop, 828, 202);
+    lineY(bottomNavTop);
+    const navItems = ["Quotazioni", "Grafico", "Operazioni", "Storico", "Impostazioni"];
+    const navIcons = ["↗", "▥", "↗", "▰", "⚙"];
+    navItems.forEach((item, i) => {
+      const x = 72 + i * 171;
+      if (item === "Storico") {
+        ctx.fillStyle = selectedBg;
+        roundRect(ctx, x - 53, bottomNavTop + 18, 106, 74, 12, true, false);
+      }
+      drawText(navIcons[i], x, bottomNavTop + 59, 31, "700", item === "Storico" ? blue : muted, "center");
+      drawText(item, x, bottomNavTop + 105, 17, "700", item === "Storico" ? blue : muted, "center");
+    });
+    if (isDark) {
+      drawText("◁", 170, 1755, 34, "400", muted, "center");
+      drawText("○", 414, 1755, 34, "400", muted, "center");
+      drawText("□", 658, 1755, 30, "400", muted, "center");
+    } else {
+      ctx.fillStyle = "#111";
+      roundRect(ctx, 278, 1768, 272, 8, 4, true, false);
+    }
+  } else {
+    // LUCA iOS: lista molto fitta, barra segmentata superiore e riepilogo in basso.
+    drawText("20:15", 38, 54, 30, "700");
+    drawText("▮▮▮  5G  ▰", 790, 54, 24, "700", text, "right");
+
+    const tabsY = 92;
+    const labels = ["Posizioni", "Ordini", "Affari"];
+    labels.forEach((name, i) => {
+      const x = 255 + i * 160;
+      drawText(name, x, tabsY, 24, i === 0 ? "700" : "500", i === 0 ? text : muted, "center");
+    });
+    lineY(116);
+
+    const startY = 126;
+    const summaryH = 250;
+    const navH = 150;
+    const summaryTop = 1792 - navH - summaryH;
+    const info = fitRows(startY, summaryTop - 10, 66, 46);
+    info.rows.forEach((t, i) => {
+      const y = startY + i * info.rowH;
+      lineY(y + info.rowH);
+      const scale = Math.min(1, info.rowH / 66);
+      const top = y + Math.max(20, 24 * scale);
+      const bottom = y + Math.max(42, 49 * scale);
+      const sideColor = t.side === "buy" ? blue : red;
+      const profitColor = Number(t.profit) >= 0 ? blue : red;
+      drawText("XAUUSD, ", 18, top, Math.max(17, 20 * scale), "700");
+      const sw = ctx.measureText("XAUUSD, ").width;
+      drawText(`${t.side} ${Number(t.lot).toFixed(2)}`, 18 + sw, top, Math.max(17, 20 * scale), "700", sideColor);
+      drawText(reportDate(t.closeTime), 808, top, Math.max(15, 18 * scale), "700", muted, "right");
+      drawText(`${price(t.entry)} → ${price(t.exit)}`, 18, bottom, Math.max(16, 19 * scale), "400", muted);
+      drawText(money(t.profit), 808, bottom, Math.max(16, 19 * scale), "700", profitColor, "right");
+    });
+
+    lineY(summaryTop);
+    [["Deposito", Number(deposit || 0)], ["Profitto", totalProfit], ["Swap", 0], ["Commissione", 0], ["Bilancio", balance]].forEach((r, i) => {
+      const y = summaryTop + 38 + i * 38;
+      drawText(r[0], 20, y, 23, i === 4 ? "700" : "500", text);
+      drawText(money(r[1]), 808, y, 23, i === 4 ? "700" : "500", text, "right");
+    });
+
+    const navTop = 1792 - navH;
+    ctx.fillStyle = navBg;
+    ctx.fillRect(0, navTop, 828, navH);
+    lineY(navTop);
+    const items = ["Quotazioni", "Chart", "Trade", "Storico", "Impostazioni"];
+    const icons = ["↕", "◫", "↗", "◉", "⚙"];
+    items.forEach((item, i) => {
+      const x = 72 + i * 171;
+      if (item === "Storico") {
+        ctx.fillStyle = selectedBg;
+        roundRect(ctx, x - 50, navTop + 12, 100, 68, 26, true, false);
+      }
+      drawText(icons[i], x, navTop + 48, 28, "700", item === "Storico" ? blue : muted, "center");
+      drawText(item, x, navTop + 90, 17, "700", item === "Storico" ? blue : muted, "center");
+    });
+    ctx.fillStyle = isDark ? "#efefef" : "#111";
+    roundRect(ctx, 282, 1768, 264, 8, 4, true, false);
+  }
+
+  return new Promise(resolve => canvas.toBlob(resolve, "image/png"));
+}
+
 function renderReportBlob(trades, layout, tab, deposit, credit, withdrawal) {
+  if (layout.startsWith("luca_")) {
+    return renderLucaReportBlob(trades, layout, tab, deposit, credit, withdrawal);
+  }
+
   const totalProfit = trades.reduce((a, t) => a + Number(t.profit || 0), 0);
   const balance = Number(deposit || 0) + Number(credit || 0) - Number(withdrawal || 0) + totalProfit;
 
@@ -884,7 +1069,7 @@ export default function LucaTradingAuto() {
         <h2>1. Settaggi</h2>
         <div className="grid">
           <label>CSV TradingView/OANDA/Numbers<input type="file" accept=".csv,.txt,.tsv,.numbers" onChange={e => e.target.files?.[0] && loadCSV(e.target.files[0])}/></label>
-          <label>Layout<select value={layout} onChange={e => setLayout(e.target.value)}><option value="ios_mt5_white">iOS MT5 bianco</option><option value="ios_mt5_dark">iOS MT5 nero</option><option value="ios_mt4_white">iOS MT4 bianco</option><option value="ios_mt4_dark">iOS MT4 nero</option><option value="android_mt4_white">Android MT4 bianco</option><option value="android_mt4_dark">Android MT4 nero</option></select></label>
+          <label>Layout<select value={layout} onChange={e => setLayout(e.target.value)}><option value="ios_mt5_white">iOS MT5 bianco</option><option value="ios_mt5_dark">iOS MT5 nero</option><option value="ios_mt4_white">iOS MT4 bianco</option><option value="ios_mt4_dark">iOS MT4 nero</option><option value="android_mt4_white">Android MT4 bianco</option><option value="android_mt4_dark">Android MT4 nero</option><option value="luca_android_white">LUCA android bianco</option><option value="luca_android_dark">LUCA android nero</option><option value="luca_ios_white">LUCA IOS bianco</option><option value="luca_ios_dark">LUCA IOS nero</option></select></label>
           <label>Periodo nello screen<select value={tab} onChange={e => setTab(e.target.value)}><option value="Day">Giorno</option><option value="Week">Settimana</option><option value="Month">Mese</option><option value="Custom">Personalizzato</option></select></label>
           <label>Valore punto 1 lotto<input type="number" value={pointValue} onChange={e => setPointValue(e.target.value)}/></label>
           <label>Deposit<input type="number" value={deposit} onChange={e => setDeposit(e.target.value)}/></label>
