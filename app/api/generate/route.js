@@ -3,8 +3,13 @@ import { NextResponse } from "next/server";
 export const runtime = "nodejs";
 export const maxDuration = 30;
 
-const MAX_SCREEN_ATTEMPTS = 140;
-const MAX_TRADE_ATTEMPTS = 240;
+const MAX_SCREEN_ATTEMPTS = 180;
+const MAX_TRADE_ATTEMPTS = 320;
+
+// Evita operazioni troppo ravvicinate tra loro.
+// Il controllo viene fatto sugli orari di apertura e chiusura delle operazioni generate.
+const MIN_OPERATION_GAP_MINUTES = 25;
+const MIN_OPERATION_GAP_MS = MIN_OPERATION_GAP_MINUTES * 60 * 1000;
 
 function rand(min, max) {
   return Number(min) + Math.random() * (Number(max) - Number(min));
@@ -28,109 +33,6 @@ function signature(candle) {
   ].join("|");
 }
 
-function bodyInteriorRange(candle) {
-  // Regola: il prezzo deve stare SEMPRE dentro il corpo della candela,
-  // quindi strettamente tra OPEN e CLOSE. Mai OPEN, CLOSE, HIGH o LOW.
-  const a = Number(candle.open);
-  const b = Number(candle.close);
-
-  if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
-
-  const low = Math.min(a, b);
-  const high = Math.max(a, b);
-
-  // Gli screen mostrano 2 decimali: lavoriamo direttamente a centesimi.
-  // +1 / -1 escludono rigorosamente i due estremi open/close.
-  const minCent = Math.floor(low * 100) + 1;
-  const maxCent = Math.ceil(high * 100) - 1;
-
-  if (minCent > maxCent) return null;
-
-  return {
-    minCent,
-    maxCent,
-    min: minCent / 100,
-    max: maxCent / 100
-  };
-}
-
-function randomInteriorPrice(candle) {
-  const range = bodyInteriorRange(candle);
-  if (!range) return null;
-
-  const cent = randInt(range.minCent, range.maxCent);
-  return {
-    value: cent / 100,
-    source: "intermedio"
-  };
-}
-
-function nearestInteriorPrice(candle, target) {
-  const range = bodyInteriorRange(candle);
-  if (!range) return null;
-
-  const targetCent = Math.round(Number(target) * 100);
-  const cent = Math.max(range.minCent, Math.min(range.maxCent, targetCent));
-
-  return {
-    value: cent / 100,
-    source: "intermedio",
-    distance: Math.abs(cent - targetCent)
-  };
-}
-
-function pickCandleNear(pool, target, startIndex, endIndex) {
-  const from = Math.max(0, startIndex);
-  const to = Math.min(pool.length - 1, endIndex);
-  if (from > to) return null;
-
-  // Se non c'è un target, scegli una candela casuale che abbia
-  // almeno un prezzo a 2 decimali strettamente tra open e close.
-  if (target === null || Number.isNaN(target)) {
-    const candidates = [];
-
-    for (let index = from; index <= to; index += 1) {
-      const selected = randomInteriorPrice(pool[index]);
-      if (!selected) continue;
-
-      candidates.push({
-        index,
-        candle: pool[index],
-        value: selected.value,
-        source: selected.source,
-        distance: 0
-      });
-    }
-
-    if (!candidates.length) return null;
-    return choose(candidates);
-  }
-
-  // Se l'utente inserisce un prezzo scenario, cerca la candela il cui
-  // corpo contiene quel prezzo. Se non esiste, usa il valore INTERNO
-  // più vicino possibile, senza mai toccare open/close/high/low.
-  let best = null;
-
-  for (let index = from; index <= to; index += 1) {
-    const selected = nearestInteriorPrice(pool[index], target);
-    if (!selected) continue;
-
-    if (!best || selected.distance < best.distance) {
-      best = {
-        index,
-        candle: pool[index],
-        value: selected.value,
-        source: selected.source,
-        distance: selected.distance
-      };
-
-      if (selected.distance === 0) break;
-    }
-  }
-
-  return best;
-}
-
 function pnl(side, entry, exit, lot, pointValue) {
   return side === "buy"
     ? (exit - entry) * lot * pointValue
@@ -139,8 +41,56 @@ function pnl(side, entry, exit, lot, pointValue) {
 
 function withRandomSecond(value) {
   const date = new Date(value);
-  date.setSeconds(randInt(0, 59));
+  date.setSeconds(randInt(4, 55));
   return date.toISOString();
+}
+
+function scenarioBounds(scenario) {
+  const a = Number(scenario?.open);
+  const b = Number(scenario?.close);
+
+  if (!Number.isFinite(a) || !Number.isFinite(b) || a === b) return null;
+
+  return {
+    min: Math.min(a, b),
+    max: Math.max(a, b)
+  };
+}
+
+// Prende SEMPRE un valore interno al corpo della candela (tra open e close),
+// mai open/close esatti e mai high/low. Se c'è uno scenario, il valore deve
+// anche restare dentro l'intervallo indicato dallo scenario.
+function interiorPrice(candle, bounds = null) {
+  const open = Number(candle.open);
+  const close = Number(candle.close);
+  if (!Number.isFinite(open) || !Number.isFinite(close) || open === close) return null;
+
+  let low = Math.min(open, close);
+  let high = Math.max(open, close);
+
+  if (bounds) {
+    low = Math.max(low, bounds.min);
+    high = Math.min(high, bounds.max);
+  }
+
+  if (!(high > low)) return null;
+
+  // Margine per non finire mai sugli estremi visibili.
+  const span = high - low;
+  const margin = Math.max(span * 0.12, 0.01);
+  const innerLow = low + margin;
+  const innerHigh = high - margin;
+
+  if (!(innerHigh > innerLow)) return null;
+
+  return Number(rand(innerLow, innerHigh).toFixed(2));
+}
+
+function isTimeFarEnough(candidateMs, usedTimes) {
+  for (const usedMs of usedTimes) {
+    if (Math.abs(candidateMs - usedMs) < MIN_OPERATION_GAP_MS) return false;
+  }
+  return true;
 }
 
 function buildTrade({
@@ -148,6 +98,7 @@ function buildTrade({
   pool,
   scenario,
   reserved,
+  reservedTimes,
   lotMin,
   lotMax,
   pointValue
@@ -155,45 +106,40 @@ function buildTrade({
   const available = pool.filter(candle => !reserved.has(signature(candle)));
   if (available.length < 2) return null;
 
-  const openTarget = scenario?.open !== null && Number.isFinite(Number(scenario?.open))
-    ? Number(scenario.open)
-    : null;
-
-  const closeTarget = scenario?.close !== null && Number.isFinite(Number(scenario?.close))
-    ? Number(scenario.close)
-    : null;
+  const bounds = scenarioBounds(scenario);
 
   for (let attempt = 0; attempt < MAX_TRADE_ATTEMPTS; attempt += 1) {
-    let openPick;
-    let closePick;
+    // Scegliamo una candela di apertura casuale, non "la più vicina" al numero
+    // dello scenario: lo scenario è solo il recinto entro cui devono stare i prezzi.
+    const openIndex = randInt(0, available.length - 2);
+    const openCandle = available[openIndex];
+    const openMs = new Date(openCandle.time).getTime();
 
-    openPick = pickCandleNear(
-      available,
-      openTarget,
-      0,
-      available.length - 2
-    );
+    if (!Number.isFinite(openMs) || !isTimeFarEnough(openMs, reservedTimes)) continue;
 
-    if (!openPick) continue;
+    const entry = interiorPrice(openCandle, bounds);
+    if (entry === null) continue;
 
-    closePick = pickCandleNear(
-      available,
-      closeTarget,
-      openPick.index + 1,
-      available.length - 1
-    );
+    // La chiusura deve essere successiva e non troppo vicina né alle altre operazioni
+    // né all'apertura della stessa operazione.
+    const laterCandidates = [];
+    for (let i = openIndex + 1; i < available.length; i += 1) {
+      const candle = available[i];
+      const closeMs = new Date(candle.time).getTime();
+      if (!Number.isFinite(closeMs)) continue;
+      if (closeMs - openMs < MIN_OPERATION_GAP_MS) continue;
+      if (!isTimeFarEnough(closeMs, reservedTimes)) continue;
 
-    if (!closePick) continue;
+      const exit = interiorPrice(candle, bounds);
+      if (exit === null) continue;
 
-    const entry = Number(Number(openPick.value).toFixed(2));
-    const exit = Number(Number(closePick.value).toFixed(2));
+      laterCandidates.push({ candle, closeMs, exit });
+    }
 
-    const openRange = bodyInteriorRange(openPick.candle);
-    const closeRange = bodyInteriorRange(closePick.candle);
+    if (!laterCandidates.length) continue;
 
-    if (!openRange || !closeRange) continue;
-    if (entry < openRange.min || entry > openRange.max) continue;
-    if (exit < closeRange.min || exit > closeRange.max) continue;
+    const closePick = choose(laterCandidates);
+    const exit = closePick.exit;
 
     let side = scenario?.side && scenario.side !== "auto"
       ? scenario.side
@@ -211,20 +157,22 @@ function buildTrade({
     if (wantPositive && profit <= 0) continue;
     if (!wantPositive && profit >= 0) continue;
 
-    reserved.add(signature(openPick.candle));
+    reserved.add(signature(openCandle));
     reserved.add(signature(closePick.candle));
+    reservedTimes.add(openMs);
+    reservedTimes.add(closePick.closeMs);
 
     return {
       side,
       lot,
-      openCandleId: openPick.candle.id,
+      openCandleId: openCandle.id,
       closeCandleId: closePick.candle.id,
-      openTime: withRandomSecond(openPick.candle.time),
+      openTime: withRandomSecond(openCandle.time),
       closeTime: withRandomSecond(closePick.candle.time),
-      entry: Number(entry.toFixed(2)),
-      exit: Number(exit.toFixed(2)),
-      entrySource: openPick.source,
-      exitSource: closePick.source,
+      entry,
+      exit,
+      entrySource: "intermedio",
+      exitSource: "intermedio",
       profit
     };
   }
@@ -276,6 +224,7 @@ export async function POST(request) {
       for (let attempt = 0; attempt < MAX_SCREEN_ATTEMPTS; attempt += 1) {
         const trades = [];
         const attemptUsed = new Set(confirmedUsed);
+        const attemptTimes = new Set();
         let scenarioCursor = 0;
 
         for (const group of pools) {
@@ -294,6 +243,7 @@ export async function POST(request) {
               pool,
               scenario,
               reserved: attemptUsed,
+              reservedTimes: attemptTimes,
               lotMin,
               lotMax,
               pointValue
@@ -308,6 +258,7 @@ export async function POST(request) {
               pool,
               scenario,
               reserved: attemptUsed,
+              reservedTimes: attemptTimes,
               lotMin,
               lotMax,
               pointValue
@@ -343,7 +294,7 @@ export async function POST(request) {
       partial: sets.length < screenCount,
       message: sets.length
         ? null
-        : "Nessuna combinazione trovata. Allarga profitto min/max, lotti o fascia oraria."
+        : `Nessuna combinazione trovata. Gli scenari ora sono intervalli di riferimento e le operazioni devono essere distanti almeno ${MIN_OPERATION_GAP_MINUTES} minuti. Allarga i vincoli se necessario.`
     });
   } catch (error) {
     console.error("Backend generation error:", error);
