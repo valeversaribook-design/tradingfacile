@@ -227,14 +227,21 @@ export async function POST(request) {
         const attemptTimes = new Set();
         let scenarioCursor = 0;
 
-        for (const group of pools) {
-          const pool = Array.isArray(group.candles)
-            ? group.candles
-                .filter(c => c?.id && c?.time)
-                .sort((a, b) => new Date(a.time) - new Date(b.time))
-            : [];
+        const requiredPerDay = autoPositive + autoNegative;
+        const validGroups = pools.filter(group => Array.isArray(group?.candles) && group.candles.length);
+        let attemptValid = validGroups.length > 0;
 
-          if (pool.length < 5) continue;
+        for (const group of validGroups) {
+          const pool = group.candles
+            .filter(c => c?.id && c?.time)
+            .sort((a, b) => new Date(a.time) - new Date(b.time));
+
+          if (pool.length < requiredPerDay * 2) {
+            attemptValid = false;
+            break;
+          }
+
+          const dayTrades = [];
 
           for (let index = 0; index < autoPositive; index += 1) {
             const scenario = scenarios[scenarioCursor++ % scenarios.length];
@@ -248,8 +255,16 @@ export async function POST(request) {
               lotMax,
               pointValue
             });
-            if (trade) trades.push(trade);
+
+            if (!trade) {
+              attemptValid = false;
+              break;
+            }
+
+            dayTrades.push(trade);
           }
+
+          if (!attemptValid) break;
 
           for (let index = 0; index < autoNegative; index += 1) {
             const scenario = scenarios[scenarioCursor++ % scenarios.length];
@@ -263,8 +278,44 @@ export async function POST(request) {
               lotMax,
               pointValue
             });
-            if (trade) trades.push(trade);
+
+            if (!trade) {
+              attemptValid = false;
+              break;
+            }
+
+            dayTrades.push(trade);
           }
+
+          if (!attemptValid) break;
+
+          const dayPositive = dayTrades.filter(t => Number(t.profit) > 0).length;
+          const dayNegative = dayTrades.filter(t => Number(t.profit) < 0).length;
+
+          if (
+            dayTrades.length !== requiredPerDay ||
+            dayPositive !== autoPositive ||
+            dayNegative !== autoNegative
+          ) {
+            attemptValid = false;
+            break;
+          }
+
+          trades.push(...dayTrades);
+        }
+
+        if (!attemptValid) continue;
+
+        const expectedTrades = validGroups.length * requiredPerDay;
+        const positiveCount = trades.filter(t => Number(t.profit) > 0).length;
+        const negativeCount = trades.filter(t => Number(t.profit) < 0).length;
+
+        if (
+          trades.length !== expectedTrades ||
+          positiveCount !== validGroups.length * autoPositive ||
+          negativeCount !== validGroups.length * autoNegative
+        ) {
+          continue;
         }
 
         trades.sort(
@@ -273,7 +324,7 @@ export async function POST(request) {
 
         const total = trades.reduce((sum, trade) => sum + Number(trade.profit || 0), 0);
 
-        if (trades.length && total >= profitMin && total <= profitMax) {
+        if (total >= profitMin && total <= profitMax) {
           best = trades;
           for (const key of attemptUsed) confirmedUsed.add(key);
           break;
@@ -294,7 +345,7 @@ export async function POST(request) {
       partial: sets.length < screenCount,
       message: sets.length
         ? null
-        : `Nessuna combinazione trovata. Gli scenari ora sono intervalli di riferimento e le operazioni devono essere distanti almeno ${MIN_OPERATION_GAP_MINUTES} minuti. Allarga i vincoli se necessario.`
+        : `Nessuna combinazione completa trovata. Il generatore accetta solo screen con ESATTAMENTE ${autoPositive} positive e ${autoNegative} negative per giorno, con almeno ${MIN_OPERATION_GAP_MINUTES} minuti di distanza. Se non riesce, non restituisce risultati parziali.`
     });
   } catch (error) {
     console.error("Backend generation error:", error);
