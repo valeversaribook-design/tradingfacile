@@ -8,7 +8,7 @@ const MAX_TRADE_ATTEMPTS = 320;
 
 // Evita operazioni troppo ravvicinate tra loro.
 // Il controllo viene fatto sugli orari di apertura e chiusura delle operazioni generate.
-const MIN_OPERATION_GAP_MINUTES = 25;
+const MIN_OPERATION_GAP_MINUTES = 5;
 const MIN_OPERATION_GAP_MS = MIN_OPERATION_GAP_MINUTES * 60 * 1000;
 
 function rand(min, max) {
