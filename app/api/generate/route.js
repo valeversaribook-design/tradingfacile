@@ -93,12 +93,17 @@ function isTimeFarEnough(candidateMs, usedTimes) {
   return true;
 }
 
+function marketValueKey(value) {
+  return Number(value).toFixed(2);
+}
+
 function buildTrade({
   wantPositive,
   pool,
   scenario,
   reserved,
   reservedTimes,
+  reservedMarketValues,
   lotMin,
   lotMax,
   pointValue
@@ -119,6 +124,7 @@ function buildTrade({
 
     const entry = interiorPrice(openCandle, bounds);
     if (entry === null) continue;
+    if (reservedMarketValues.has(marketValueKey(entry))) continue;
 
     // La chiusura deve essere successiva e non troppo vicina né alle altre operazioni
     // né all'apertura della stessa operazione.
@@ -132,6 +138,8 @@ function buildTrade({
 
       const exit = interiorPrice(candle, bounds);
       if (exit === null) continue;
+      if (marketValueKey(exit) === marketValueKey(entry)) continue;
+      if (reservedMarketValues.has(marketValueKey(exit))) continue;
 
       laterCandidates.push({ candle, closeMs, exit });
     }
@@ -161,6 +169,8 @@ function buildTrade({
     reserved.add(signature(closePick.candle));
     reservedTimes.add(openMs);
     reservedTimes.add(closePick.closeMs);
+    reservedMarketValues.add(marketValueKey(entry));
+    reservedMarketValues.add(marketValueKey(exit));
 
     return {
       side,
@@ -242,6 +252,7 @@ export async function POST(request) {
           }
 
           const dayTrades = [];
+          const dayMarketValues = new Set();
 
           for (let index = 0; index < autoPositive; index += 1) {
             const scenario = scenarios[scenarioCursor++ % scenarios.length];
@@ -251,6 +262,7 @@ export async function POST(request) {
               scenario,
               reserved: attemptUsed,
               reservedTimes: attemptTimes,
+              reservedMarketValues: dayMarketValues,
               lotMin,
               lotMax,
               pointValue
@@ -274,6 +286,7 @@ export async function POST(request) {
               scenario,
               reserved: attemptUsed,
               reservedTimes: attemptTimes,
+              reservedMarketValues: dayMarketValues,
               lotMin,
               lotMax,
               pointValue
