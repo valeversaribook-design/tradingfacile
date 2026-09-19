@@ -250,6 +250,37 @@ function saveUsedCandlesToday(usedSet) {
   }
 }
 
+function usedMarketValuesStorageKey() {
+  return "luca-trading-used-market-values:v1";
+}
+
+function dayMarketValueKey(day, value) {
+  return `${day}|${Number(value).toFixed(2)}`;
+}
+
+function readUsedMarketValues() {
+  if (typeof window === "undefined") return new Set();
+  try {
+    const raw = window.localStorage.getItem(usedMarketValuesStorageKey());
+    const values = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(values) ? values : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveUsedMarketValues(usedSet) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(
+      usedMarketValuesStorageKey(),
+      JSON.stringify(Array.from(usedSet))
+    );
+  } catch {
+    // L'app continua a funzionare anche se localStorage non è disponibile.
+  }
+}
+
 
 
 function renderLucaLayoutBlob(trades, layout, deposit, credit, withdrawal) {
@@ -941,6 +972,7 @@ export default function LucaTradingAuto() {
   const [trades, setTrades] = useState([]);
   const [autoSets, setAutoSets] = useState([]);
   const [usedCandleKeys, setUsedCandleKeys] = useState([]);
+  const [usedMarketValueKeys, setUsedMarketValueKeys] = useState([]);
   const [isGenerating, setIsGenerating] = useState(false);
 
   const [layout, setLayout] = useState("ios_mt5_white");
@@ -980,6 +1012,7 @@ export default function LucaTradingAuto() {
   useEffect(() => {
     const refreshUsedCandles = () => {
       setUsedCandleKeys(Array.from(readUsedCandlesToday()));
+      setUsedMarketValueKeys(Array.from(readUsedMarketValues()));
     };
 
     refreshUsedCandles();
@@ -993,6 +1026,11 @@ export default function LucaTradingAuto() {
   const usedCandleSet = useMemo(
     () => new Set(usedCandleKeys),
     [usedCandleKeys]
+  );
+
+  const usedMarketValueSet = useMemo(
+    () => new Set(usedMarketValueKeys),
+    [usedMarketValueKeys]
   );
 
   const dayOptions = useMemo(() => {
@@ -1123,27 +1161,13 @@ export default function LucaTradingAuto() {
     setIsGenerating(true);
 
     try {
-      // Prima di una nuova generazione considero già usati anche TUTTI i valori
-      // presenti nella tabella corrente. In questo modo nessun prezzo può tornare
-      // in una generazione successiva, anche se proveniva da una versione precedente.
-      const marketValuesForRequest = new Set(usedMarketValueSet);
-
-      trades.forEach(t => {
-        const entryDay = dayKey(new Date(t.openTime));
-        const exitDay = dayKey(new Date(t.closeTime));
-        marketValuesForRequest.add(dayMarketValueKey(entryDay, t.entry));
-        marketValuesForRequest.add(dayMarketValueKey(exitDay, t.exit));
-      });
-
-      saveUsedMarketValues(marketValuesForRequest);
-      setUsedMarketValueKeys(Array.from(marketValuesForRequest));
-
       const response = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           pools,
           usedCandleKeys: Array.from(usedCandleSet),
+          usedMarketValueKeys: Array.from(usedMarketValueSet),
           scenarios: scenarios(),
           settings: {
             screenCount: Number(screenCount || 1),
@@ -1181,6 +1205,10 @@ export default function LucaTradingAuto() {
       const updatedUsed = new Set(result.usedCandleKeys || []);
       saveUsedCandlesToday(updatedUsed);
       setUsedCandleKeys(Array.from(updatedUsed));
+
+      const updatedMarketValues = new Set(result.usedMarketValueKeys || []);
+      saveUsedMarketValues(updatedMarketValues);
+      setUsedMarketValueKeys(Array.from(updatedMarketValues));
 
       setAutoSets(created);
       setTrades(
@@ -1232,20 +1260,6 @@ export default function LucaTradingAuto() {
       if (field === "closeTime") u.closeTime = dateFromInputs(htmlDate(t.closeTime), value);
 
       u.profit = Number(pnl(u.side, u.entry, u.exit, u.lot, Number(pointValue)).toFixed(2));
-
-      if (field === "entry" || field === "exit") {
-        const updatedMarketValues = new Set(readUsedMarketValues());
-        const tradeDay = dayKey(new Date(u.openTime));
-        if (Number.isFinite(Number(u.entry))) {
-          updatedMarketValues.add(dayMarketValueKey(tradeDay, u.entry));
-        }
-        if (Number.isFinite(Number(u.exit))) {
-          updatedMarketValues.add(dayMarketValueKey(tradeDay, u.exit));
-        }
-        saveUsedMarketValues(updatedMarketValues);
-        setUsedMarketValueKeys(Array.from(updatedMarketValues));
-      }
-
       return u;
     }).sort((a, b) => new Date(a.closeTime).getTime() - new Date(b.closeTime).getTime()));
   }
