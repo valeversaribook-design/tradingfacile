@@ -250,6 +250,43 @@ function saveUsedCandlesToday(usedSet) {
   }
 }
 
+function marketValueKey(value) {
+  return Number(value).toFixed(2);
+}
+
+function dayMarketValueKey(day, value) {
+  return `${day}|${marketValueKey(value)}`;
+}
+
+function usedMarketValuesStorageKey() {
+  return "luca-trading-used-market-values:v1";
+}
+
+function readUsedMarketValues() {
+  if (typeof window === "undefined") return new Set();
+
+  try {
+    const raw = window.localStorage.getItem(usedMarketValuesStorageKey());
+    const values = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(values) ? values : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveUsedMarketValues(usedSet) {
+  if (typeof window === "undefined") return;
+
+  try {
+    window.localStorage.setItem(
+      usedMarketValuesStorageKey(),
+      JSON.stringify(Array.from(usedSet))
+    );
+  } catch {
+    // Se localStorage non è disponibile, l'app continua a funzionare nella sessione.
+  }
+}
+
 
 
 function renderLucaLayoutBlob(trades, layout, deposit, credit, withdrawal) {
@@ -941,6 +978,7 @@ export default function LucaTradingAuto() {
   const [trades, setTrades] = useState([]);
   const [autoSets, setAutoSets] = useState([]);
   const [usedCandleKeys, setUsedCandleKeys] = useState([]);
+  const [usedMarketValueKeys, setUsedMarketValueKeys] = useState([]);
   const [isGenerating, setIsGenerating] = useState(false);
 
   const [layout, setLayout] = useState("ios_mt5_white");
@@ -980,6 +1018,7 @@ export default function LucaTradingAuto() {
   useEffect(() => {
     const refreshUsedCandles = () => {
       setUsedCandleKeys(Array.from(readUsedCandlesToday()));
+      setUsedMarketValueKeys(Array.from(readUsedMarketValues()));
     };
 
     refreshUsedCandles();
@@ -993,6 +1032,11 @@ export default function LucaTradingAuto() {
   const usedCandleSet = useMemo(
     () => new Set(usedCandleKeys),
     [usedCandleKeys]
+  );
+
+  const usedMarketValueSet = useMemo(
+    () => new Set(usedMarketValueKeys),
+    [usedMarketValueKeys]
   );
 
   const dayOptions = useMemo(() => {
@@ -1129,6 +1173,7 @@ export default function LucaTradingAuto() {
         body: JSON.stringify({
           pools,
           usedCandleKeys: Array.from(usedCandleSet),
+          usedMarketValueKeys: Array.from(usedMarketValueSet),
           scenarios: scenarios(),
           settings: {
             screenCount: Number(screenCount || 1),
@@ -1166,6 +1211,10 @@ export default function LucaTradingAuto() {
       const updatedUsed = new Set(result.usedCandleKeys || []);
       saveUsedCandlesToday(updatedUsed);
       setUsedCandleKeys(Array.from(updatedUsed));
+
+      const updatedMarketValues = new Set(result.usedMarketValueKeys || []);
+      saveUsedMarketValues(updatedMarketValues);
+      setUsedMarketValueKeys(Array.from(updatedMarketValues));
 
       setAutoSets(created);
       setTrades(
@@ -1253,11 +1302,29 @@ export default function LucaTradingAuto() {
       c => !usedCandleSet.has(candleSignature(c))
     );
 
-    const base = available[0];
-    const next = available[1];
+    let base = null;
+    let next = null;
+
+    for (let i = 0; i < available.length - 1 && !base; i++) {
+      const candidateBase = available[i];
+      const candidateDay = dayKey(candidateBase.time);
+      const entryKey = dayMarketValueKey(candidateDay, candidateBase.open);
+      if (usedMarketValueSet.has(entryKey)) continue;
+
+      for (let j = i + 1; j < available.length; j++) {
+        const candidateNext = available[j];
+        if (dayKey(candidateNext.time) !== candidateDay) continue;
+        const exitKey = dayMarketValueKey(candidateDay, candidateNext.close);
+        if (usedMarketValueSet.has(exitKey)) continue;
+        if (marketValueKey(candidateBase.open) === marketValueKey(candidateNext.close)) continue;
+        base = candidateBase;
+        next = candidateNext;
+        break;
+      }
+    }
 
     if (!base || !next) {
-      return alert("Non ci sono almeno due candele nuove disponibili per oggi.");
+      return alert("Non ci sono due valori di mercato nuovi disponibili per il giorno selezionato.");
     }
 
     const side = "buy";
@@ -1270,6 +1337,13 @@ export default function LucaTradingAuto() {
     updatedUsed.add(candleSignature(next));
     saveUsedCandlesToday(updatedUsed);
     setUsedCandleKeys(Array.from(updatedUsed));
+
+    const updatedMarketValues = new Set(usedMarketValueSet);
+    const manualDay = dayKey(base.time);
+    updatedMarketValues.add(dayMarketValueKey(manualDay, entry));
+    updatedMarketValues.add(dayMarketValueKey(manualDay, exit));
+    saveUsedMarketValues(updatedMarketValues);
+    setUsedMarketValueKeys(Array.from(updatedMarketValues));
 
     setTrades(prev => [...prev, {
       side,
