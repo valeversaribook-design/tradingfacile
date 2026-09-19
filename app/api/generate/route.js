@@ -97,10 +97,6 @@ function marketValueKey(value) {
   return Number(value).toFixed(2);
 }
 
-function dayMarketValueKey(day, value) {
-  return `${day}|${marketValueKey(value)}`;
-}
-
 function buildTrade({
   wantPositive,
   pool,
@@ -230,12 +226,6 @@ export async function POST(request) {
       Array.isArray(body?.usedCandleKeys) ? body.usedCandleKeys : []
     );
 
-    // Valori di mercato già usati, persistenti anche tra generazioni/refresh.
-    // La chiave contiene anche il giorno: YYYY-MM-DD|PREZZO_A_2_DECIMALI.
-    const confirmedMarketValues = new Set(
-      Array.isArray(body?.usedMarketValueKeys) ? body.usedMarketValueKeys : []
-    );
-
     const sets = [];
 
     for (let screenIndex = 0; screenIndex < screenCount; screenIndex += 1) {
@@ -262,13 +252,7 @@ export async function POST(request) {
           }
 
           const dayTrades = [];
-          const day = String(group.day || "");
-          const prefix = `${day}|`;
-          const dayMarketValues = new Set(
-            Array.from(confirmedMarketValues)
-              .filter(key => String(key).startsWith(prefix))
-              .map(key => String(key).slice(prefix.length))
-          );
+          const dayMarketValues = new Set();
 
           for (let index = 0; index < autoPositive; index += 1) {
             const scenario = scenarios[scenarioCursor++ % scenarios.length];
@@ -353,25 +337,59 @@ export async function POST(request) {
 
         const total = trades.reduce((sum, trade) => sum + Number(trade.profit || 0), 0);
 
+        // CONTROLLO FINALE RIGIDO:
+        // nello stesso giorno ogni valore visualizzato a 2 decimali deve essere unico
+        // considerando INSIEME tutte le entrate e tutte le uscite.
+        let duplicateMarketValueFound = false;
+        const finalValuesByDay = new Map();
+
+        for (const trade of trades) {
+          const tradeDay = String(
+            validGroups.find(group =>
+              Array.isArray(group?.candles) &&
+              group.candles.some(c => c?.id === trade.openCandleId)
+            )?.day || ""
+          );
+
+          if (!tradeDay) {
+            duplicateMarketValueFound = true;
+            break;
+          }
+
+          if (!finalValuesByDay.has(tradeDay)) {
+            const prefix = `${tradeDay}|`;
+            finalValuesByDay.set(
+              tradeDay,
+              new Set(
+                Array.from(confirmedMarketValues)
+                  .filter(key => String(key).startsWith(prefix))
+                  .map(key => String(key).slice(prefix.length))
+              )
+            );
+          }
+
+          const usedValues = finalValuesByDay.get(tradeDay);
+          const entryKey = marketValueKey(trade.entry);
+          const exitKey = marketValueKey(trade.exit);
+
+          if (
+            entryKey === exitKey ||
+            usedValues.has(entryKey) ||
+            usedValues.has(exitKey)
+          ) {
+            duplicateMarketValueFound = true;
+            break;
+          }
+
+          usedValues.add(entryKey);
+          usedValues.add(exitKey);
+        }
+
+        if (duplicateMarketValueFound) continue;
+
         if (total >= profitMin && total <= profitMax) {
           best = trades;
           for (const key of attemptUsed) confirmedUsed.add(key);
-
-          // Registra definitivamente tutti i prezzi dello screen accettato,
-          // separati per giorno. Così lo stesso valore non può tornare in
-          // un altro screen o in una generazione successiva dello stesso giorno.
-          for (const trade of trades) {
-            const tradeDay = String(
-              validGroups.find(group =>
-                Array.isArray(group?.candles) &&
-                group.candles.some(c => c?.id === trade.openCandleId)
-              )?.day || ""
-            );
-            if (tradeDay) {
-              confirmedMarketValues.add(dayMarketValueKey(tradeDay, trade.entry));
-              confirmedMarketValues.add(dayMarketValueKey(tradeDay, trade.exit));
-            }
-          }
           break;
         }
       }
@@ -387,7 +405,6 @@ export async function POST(request) {
     return NextResponse.json({
       sets,
       usedCandleKeys: Array.from(confirmedUsed),
-      usedMarketValueKeys: Array.from(confirmedMarketValues),
       partial: sets.length < screenCount,
       message: sets.length
         ? null
