@@ -1057,56 +1057,96 @@ export default function LucaTradingAuto() {
     return candles.filter(c => set.has(dayKey(c.time)));
   }, [candles, selectedDayKeys]);
 
-  function loadCSV(file) {
+  async function loadCSV(file) {
     if (file.name.toLowerCase().endsWith(".numbers")) {
-      alert("Il file .numbers non può essere letto direttamente dal browser/Vercel. Aprilo con Numbers e fai: File > Esporta in > CSV. Poi carica qui il CSV esportato. Il formato con time tipo 2026-07-02T19:57:00+02:00 è già supportato.");
+      alert("Il file .numbers non può essere letto direttamente dal browser/Vercel. Aprilo con Numbers e fai: File > Esporta in > CSV. Poi carica qui il CSV esportato.");
       return;
     }
-    Papa.parse(file, {
-      header: true,
-      skipEmptyLines: true,
-      complete: res => {
-        const rows = res.data.filter(Boolean);
-        if (!rows.length) return alert("CSV vuoto.");
 
-        const h = {
-          time: findHeader(rows[0], ["time", "datetime", "date", "data", "timestamp", "time utc", "time (utc)", "ora", "data ora"]),
-          open: findHeader(rows[0], ["open", "apertura", "o", "otwarcie"]),
-          high: findHeader(rows[0], ["high", "massimo", "max", "h", "najwyzszy", "najwyższy"]),
-          low: findHeader(rows[0], ["low", "minimo", "min", "l", "najnizszy", "najniższy"]),
-          close: findHeader(rows[0], ["close", "chiusura", "c", "zamkniecie", "zamknięcie"]),
-          volume: findHeader(rows[0], ["volume", "vol", "tick volume", "volume ", "vol."])
-        };
+    try {
+      // Leggiamo prima il file come testo: è più affidabile con CSV OANDA/TradingView
+      // che contengono molte colonne diagnostiche, intestazioni tra virgolette o BOM.
+      let raw = await file.text();
 
-        if (!h.time || !h.open || !h.high || !h.low || !h.close) {
-          return alert("CSV non valido. Servono colonne time, open, high, low, close.");
-        }
-
-        const parsed = rows.map((r, index) => {
-          const t = parseDate(r[h.time]);
-          return {
-            id: `row_${index}`,
-            rowIndex: index + 1,
-            rawTime: String(r[h.time]),
-            time: t,
-            open: toNum(r[h.open]),
-            high: toNum(r[h.high]),
-            low: toNum(r[h.low]),
-            close: toNum(r[h.close]),
-            volume: h.volume ? toNum(r[h.volume]) : 0
-          };
-        })
-        .filter(c => c.time && ![c.open, c.high, c.low, c.close].some(Number.isNaN))
-        .sort((a, b) => a.time - b.time);
-
-        const days = Array.from(new Set(parsed.map(c => dayKey(c.time)))).sort();
-        setCandles(parsed);
-        setDayFrom(days[0] || "");
-        setDayTo(days.at(-1) || "");
-        setTrades([]);
-        setAutoSets([]);
+      if (!raw || !raw.trim()) {
+        return alert("CSV realmente vuoto.");
       }
-    });
+
+      // Normalizzazione senza alterare i dati.
+      raw = raw
+        .replace(/^\uFEFF/, "")
+        .replace(/\r\n/g, "\n")
+        .replace(/\r/g, "\n");
+
+      const res = Papa.parse(raw, {
+        header: true,
+        skipEmptyLines: "greedy",
+        delimiter: "",
+        transformHeader: h => String(h ?? "").replace(/^\uFEFF/, "").trim()
+      });
+
+      const rows = (res.data || []).filter(row =>
+        row &&
+        typeof row === "object" &&
+        Object.values(row).some(v => String(v ?? "").trim() !== "")
+      );
+
+      if (!rows.length) {
+        console.error("PapaParse errors:", res.errors);
+        return alert("Il CSV contiene dati ma non riesco a leggere le righe. Controlla la console per i dettagli.");
+      }
+
+      const h = {
+        time: findHeader(rows[0], ["time", "datetime", "date", "data", "timestamp", "time utc", "time (utc)", "ora", "data ora"]),
+        open: findHeader(rows[0], ["open", "apertura", "o", "otwarcie"]),
+        high: findHeader(rows[0], ["high", "massimo", "max", "h", "najwyzszy", "najwyższy"]),
+        low: findHeader(rows[0], ["low", "minimo", "min", "l", "najnizszy", "najniższy"]),
+        close: findHeader(rows[0], ["close", "chiusura", "c", "zamkniecie", "zamknięcie"]),
+        volume: findHeader(rows[0], ["volume", "vol", "tick volume", "volume ", "vol."])
+      };
+
+      if (!h.time || !h.open || !h.high || !h.low || !h.close) {
+        console.error("Header trovati:", Object.keys(rows[0]), "PapaParse errors:", res.errors);
+        return alert("CSV non valido. Servono colonne time, open, high, low, close.");
+      }
+
+      const parsed = rows.map((r, index) => {
+        const t = parseDate(r[h.time]);
+        return {
+          id: `row_${index}`,
+          rowIndex: index + 1,
+          rawTime: String(r[h.time] ?? ""),
+          time: t,
+          open: toNum(r[h.open]),
+          high: toNum(r[h.high]),
+          low: toNum(r[h.low]),
+          close: toNum(r[h.close]),
+          volume: h.volume ? toNum(r[h.volume]) : 0
+        };
+      })
+      .filter(c =>
+        c.time &&
+        !Number.isNaN(c.time.getTime()) &&
+        ![c.open, c.high, c.low, c.close].some(Number.isNaN)
+      )
+      .sort((a, b) => a.time - b.time);
+
+      if (!parsed.length) {
+        console.error("Righe lette:", rows.length, "PapaParse errors:", res.errors);
+        return alert("Il CSV è stato letto, ma nessuna candela OHLC valida è stata trovata.");
+      }
+
+      const days = Array.from(new Set(parsed.map(c => dayKey(c.time)))).sort();
+
+      setCandles(parsed);
+      setDayFrom(days[0] || "");
+      setDayTo(days.at(-1) || "");
+      setTrades([]);
+      setAutoSets([]);
+    } catch (error) {
+      console.error("Errore import CSV:", error);
+      alert(`Errore durante la lettura del CSV: ${error?.message || "errore sconosciuto"}`);
+    }
   }
 
   function scenarios() {
