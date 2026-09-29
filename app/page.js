@@ -1059,80 +1059,115 @@ export default function LucaTradingAuto() {
 
   async function loadCSV(file) {
     if (file.name.toLowerCase().endsWith(".numbers")) {
-      alert("Il file .numbers non può essere letto direttamente dal browser/Vercel. Aprilo con Numbers e fai: File > Esporta in > CSV. Poi carica qui il CSV esportato.");
+      alert("Il file .numbers non può essere letto direttamente. Esportalo prima in CSV.");
       return;
     }
 
+    // Parser CSV locale: gestisce correttamente anche intestazioni tra virgolette
+    // che contengono virgole, come quelle del CSV OANDA attuale.
+    function parseCsvLine(line) {
+      const fields = [];
+      let value = "";
+      let quoted = false;
+
+      for (let i = 0; i < line.length; i += 1) {
+        const ch = line[i];
+
+        if (ch === '"') {
+          if (quoted && line[i + 1] === '"') {
+            value += '"';
+            i += 1;
+          } else {
+            quoted = !quoted;
+          }
+        } else if (ch === "," && !quoted) {
+          fields.push(value);
+          value = "";
+        } else {
+          value += ch;
+        }
+      }
+
+      fields.push(value);
+      return fields;
+    }
+
     try {
-      // Leggiamo prima il file come testo: è più affidabile con CSV OANDA/TradingView
-      // che contengono molte colonne diagnostiche, intestazioni tra virgolette o BOM.
       let raw = await file.text();
 
       if (!raw || !raw.trim()) {
         return alert("CSV realmente vuoto.");
       }
 
-      // Normalizzazione senza alterare i dati.
       raw = raw
         .replace(/^\uFEFF/, "")
         .replace(/\r\n/g, "\n")
         .replace(/\r/g, "\n");
 
-      const res = Papa.parse(raw, {
-        header: true,
-        skipEmptyLines: "greedy",
-        delimiter: "",
-        transformHeader: h => String(h ?? "").replace(/^\uFEFF/, "").trim()
-      });
+      const lines = raw
+        .split("\n")
+        .filter(line => line.trim() !== "");
 
-      const rows = (res.data || []).filter(row =>
-        row &&
-        typeof row === "object" &&
-        Object.values(row).some(v => String(v ?? "").trim() !== "")
-      );
-
-      if (!rows.length) {
-        console.error("PapaParse errors:", res.errors);
-        return alert("Il CSV contiene dati ma non riesco a leggere le righe. Controlla la console per i dettagli.");
+      if (lines.length < 2) {
+        return alert("Il CSV non contiene righe dati.");
       }
 
+      const headers = parseCsvLine(lines[0]).map(h =>
+        String(h ?? "").replace(/^\uFEFF/, "").trim()
+      );
+
+      const rows = lines.slice(1).map(line => {
+        const values = parseCsvLine(line);
+        const row = {};
+
+        headers.forEach((header, index) => {
+          row[header] = values[index] ?? "";
+        });
+
+        return row;
+      });
+
+      const firstRow = rows[0] || {};
+
       const h = {
-        time: findHeader(rows[0], ["time", "datetime", "date", "data", "timestamp", "time utc", "time (utc)", "ora", "data ora"]),
-        open: findHeader(rows[0], ["open", "apertura", "o", "otwarcie"]),
-        high: findHeader(rows[0], ["high", "massimo", "max", "h", "najwyzszy", "najwyższy"]),
-        low: findHeader(rows[0], ["low", "minimo", "min", "l", "najnizszy", "najniższy"]),
-        close: findHeader(rows[0], ["close", "chiusura", "c", "zamkniecie", "zamknięcie"]),
-        volume: findHeader(rows[0], ["volume", "vol", "tick volume", "volume ", "vol."])
+        time: findHeader(firstRow, ["time", "datetime", "date", "data", "timestamp", "time utc", "time (utc)", "ora", "data ora"]),
+        open: findHeader(firstRow, ["open", "apertura", "o"]),
+        high: findHeader(firstRow, ["high", "massimo", "max", "h"]),
+        low: findHeader(firstRow, ["low", "minimo", "min", "l"]),
+        close: findHeader(firstRow, ["close", "chiusura", "c"]),
+        volume: findHeader(firstRow, ["volume", "vol", "tick volume", "vol."])
       };
 
       if (!h.time || !h.open || !h.high || !h.low || !h.close) {
-        console.error("Header trovati:", Object.keys(rows[0]), "PapaParse errors:", res.errors);
-        return alert("CSV non valido. Servono colonne time, open, high, low, close.");
+        console.error("Intestazioni CSV:", headers);
+        return alert("CSV non valido. Servono le colonne time, open, high, low e close.");
       }
 
-      const parsed = rows.map((r, index) => {
-        const t = parseDate(r[h.time]);
-        return {
-          id: `row_${index}`,
-          rowIndex: index + 1,
-          rawTime: String(r[h.time] ?? ""),
-          time: t,
-          open: toNum(r[h.open]),
-          high: toNum(r[h.high]),
-          low: toNum(r[h.low]),
-          close: toNum(r[h.close]),
-          volume: h.volume ? toNum(r[h.volume]) : 0
-        };
-      })
-      .filter(c =>
-        c.time &&
-        !Number.isNaN(c.time.getTime()) &&
-        ![c.open, c.high, c.low, c.close].some(Number.isNaN)
-      )
-      .sort((a, b) => a.time - b.time);
+      const parsed = rows
+        .map((r, index) => {
+          const t = parseDate(r[h.time]);
+
+          return {
+            id: `row_${index}`,
+            rowIndex: index + 1,
+            rawTime: String(r[h.time] ?? ""),
+            time: t,
+            open: toNum(r[h.open]),
+            high: toNum(r[h.high]),
+            low: toNum(r[h.low]),
+            close: toNum(r[h.close]),
+            volume: h.volume ? toNum(r[h.volume]) : 0
+          };
+        })
+        .filter(c =>
+          c.time &&
+          !Number.isNaN(c.time.getTime()) &&
+          ![c.open, c.high, c.low, c.close].some(Number.isNaN)
+        )
+        .sort((a, b) => a.time - b.time);
 
       if (!parsed.length) {
-        console.error("Righe lette:", rows.length, "PapaParse errors:", res.errors);
+        console.error("Prime righe CSV:", rows.slice(0, 3));
         return alert("Il CSV è stato letto, ma nessuna candela OHLC valida è stata trovata.");
       }
 
