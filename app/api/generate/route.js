@@ -97,10 +97,21 @@ function marketValueKey(value) {
   return Number(value).toFixed(2);
 }
 
+
+function signalRuleForTime(rules,timeMs){
+ const m=(Array.isArray(rules)?rules:[]).filter(r=>{const s=new Date(r?.start).getTime(),e=r?.end?new Date(r.end).getTime():Infinity;return Number.isFinite(s)&&timeMs>=s&&timeMs<=e});
+ return m.length?m.sort((a,b)=>new Date(b.start)-new Date(a.start))[0]:null;
+}
+function signalExitBounds(r){
+ if(!r)return null; const vals=[Number(r.entryMin),Number(r.entryMax),Number(r.sl),...(Array.isArray(r.tps)?r.tps.map(Number):[])].filter(Number.isFinite);
+ return vals.length?{min:Math.min(...vals),max:Math.max(...vals)}:null;
+}
+
 function buildTrade({
   wantPositive,
   pool,
   scenario,
+  signalRules,
   reserved,
   reservedTimes,
   reservedMarketValues,
@@ -122,7 +133,9 @@ function buildTrade({
 
     if (!Number.isFinite(openMs) || !isTimeFarEnough(openMs, reservedTimes)) continue;
 
-    const entry = interiorPrice(openCandle, bounds);
+    const activeSignal = signalRuleForTime(signalRules, openMs);
+    const entryBounds = activeSignal ? {min:Number(activeSignal.entryMin),max:Number(activeSignal.entryMax)} : bounds;
+    const entry = interiorPrice(openCandle, entryBounds);
     if (entry === null) continue;
     if (reservedMarketValues.has(marketValueKey(entry))) continue;
 
@@ -136,7 +149,7 @@ function buildTrade({
       if (closeMs - openMs < MIN_OPERATION_GAP_MS) continue;
       if (!isTimeFarEnough(closeMs, reservedTimes)) continue;
 
-      const exit = interiorPrice(candle, bounds);
+      const exit = interiorPrice(candle, activeSignal ? signalExitBounds(activeSignal) : bounds);
       if (exit === null) continue;
       if (marketValueKey(exit) === marketValueKey(entry)) continue;
       if (reservedMarketValues.has(marketValueKey(exit))) continue;
@@ -149,9 +162,7 @@ function buildTrade({
     const closePick = choose(laterCandidates);
     const exit = closePick.exit;
 
-    let side = scenario?.side && scenario.side !== "auto"
-      ? scenario.side
-      : null;
+    let side = activeSignal?.side ? String(activeSignal.side).toLowerCase() : (scenario?.side && scenario.side !== "auto" ? scenario.side : null);
 
     if (!side) {
       side = wantPositive
@@ -198,6 +209,7 @@ export async function POST(request) {
       ? body.scenarios
       : [{ side: "auto", open: null, close: null }];
 
+    const signalRules = Array.isArray(body?.signalRules) ? body.signalRules : [];
     const settings = body?.settings || {};
     const screenCount = Math.max(1, Math.min(50, Number(settings.screenCount || 1)));
     const autoPositive = Math.max(0, Math.min(50, Number(settings.autoPositive || 0)));
@@ -270,6 +282,7 @@ export async function POST(request) {
               wantPositive: true,
               pool,
               scenario,
+              signalRules,
               reserved: attemptUsed,
               reservedTimes: attemptTimes,
               reservedMarketValues: dayMarketValues,
@@ -294,6 +307,7 @@ export async function POST(request) {
               wantPositive: false,
               pool,
               scenario,
+              signalRules,
               reserved: attemptUsed,
               reservedTimes: attemptTimes,
               reservedMarketValues: dayMarketValues,
