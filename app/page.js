@@ -1488,21 +1488,7 @@ export default function LucaTradingAuto() {
           <span>3</span><select value={scenario3Side} onChange={e => setScenario3Side(e.target.value)}><option value="auto">Automatico</option><option value="buy">BUY</option><option value="sell">SELL</option></select><input type="number" step="0.01" value={scenario3Open} onChange={e => setScenario3Open(e.target.value)} placeholder="automatico"/><input type="number" step="0.01" value={scenario3Close} onChange={e => setScenario3Close(e.target.value)} placeholder="automatico"/>
         </div>
 
-        <div style={{marginTop:"24px",paddingTop:"18px",borderTop:"1px solid #29415b"}}>
-          <h3>Range segnali operativi</h3>
-          <p className="hint">Indica inizio e, se conosciuta, fine. Senza fine il segnale resta valido. I range restano salvati anche dopo il refresh.</p>
-          <div className="grid">
-            <label style={{gridColumn:"span 2"}}>Testo segnale<textarea value={signalText} onChange={e=>setSignalText(e.target.value)} rows={8} style={{width:"100%",resize:"vertical"}} placeholder={"Apro una nuova operazione 🚀\nXAUUSD SELL\nEntry: 4155.11 - 4158.29\nSL: 4183.39\nTP1: 4154.57\nTP2: 4146.04\nTP3: 4116.72\nTP4: 4023.41"}/></label>
-            <label>Data e ora inizio<input type="datetime-local" value={signalStart} onChange={e=>setSignalStart(e.target.value)}/></label>
-            <label>Data e ora fine (facoltativa)<input type="datetime-local" value={signalEnd} onChange={e=>setSignalEnd(e.target.value)}/></label>
-          </div>
-          <div className="actions"><button type="button" className="primary" onClick={addSignalRule}>Salva range</button></div>
-          {signalRules.map(r=><div key={r.id} style={{border:"1px solid #29415b",borderRadius:"10px",padding:"12px",marginTop:"10px"}}>
-            <b>{r.side.toUpperCase()} · Entry {price(r.entryMin)} - {price(r.entryMax)}</b>
-            <div className="hint">{itDate(new Date(r.start),false)} → {r.end?itDate(new Date(r.end),false):"IN CORSO"}</div>
-            <div className="actions">{!r.end&&<button type="button" onClick={()=>stopSignalRule(r.id)}>Stop adesso</button>}<button type="button" onClick={()=>removeSignalRule(r.id)}>Elimina</button></div>
-          </div>)}
-        </div>
+
 
         <div className="actions">
           <button className="primary" disabled={isGenerating} onClick={generateAuto}>{isGenerating ? "Generazione in corso..." : "Genera operazioni"}</button>
@@ -1576,6 +1562,22 @@ export default function LucaTradingAuto() {
             )}
           </tbody>
         </table>
+      </section>
+
+      <section className="panel">
+          <h3>Range segnali operativi</h3>
+          <p className="hint">Indica inizio e, se conosciuta, fine. Senza fine il segnale resta valido. I range restano salvati anche dopo il refresh.</p>
+          <div className="grid">
+            <label style={{gridColumn:"span 2"}}>Testo segnale<textarea value={signalText} onChange={e=>setSignalText(e.target.value)} rows={8} style={{width:"100%",resize:"vertical"}} placeholder={"Apro una nuova operazione 🚀\nXAUUSD SELL\nEntry: 4155.11 - 4158.29\nSL: 4183.39\nTP1: 4154.57\nTP2: 4146.04\nTP3: 4116.72\nTP4: 4023.41"}/></label>
+            <label>Data e ora inizio<input type="datetime-local" value={signalStart} onChange={e=>setSignalStart(e.target.value)}/></label>
+            <label>Data e ora fine (facoltativa)<input type="datetime-local" value={signalEnd} onChange={e=>setSignalEnd(e.target.value)}/></label>
+          </div>
+          <div className="actions"><button type="button" className="primary" onClick={addSignalRule}>Salva range</button></div>
+          {signalRules.map(r=><div key={r.id} style={{border:"1px solid #29415b",borderRadius:"10px",padding:"12px",marginTop:"10px"}}>
+            <b>{r.side.toUpperCase()} · Entry {price(r.entryMin)} - {price(r.entryMax)}</b>
+            <div className="hint">{itDate(new Date(r.start),false)} → {r.end?itDate(new Date(r.end),false):"IN CORSO"}</div>
+            <div className="actions">{!r.end&&<button type="button" onClick={()=>stopSignalRule(r.id)}>Stop adesso</button>}<button type="button" onClick={()=>removeSignalRule(r.id)}>Elimina</button></div>
+          </div>)}
       </section>
 
       <section className="panel final">
