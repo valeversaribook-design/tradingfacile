@@ -283,6 +283,17 @@ function saveUsedMarketValues(usedSet) {
 
 
 
+
+const SIGNAL_RULES_STORAGE_KEY = "luca-trading-signal-rules:v1";
+function readSignalRules(){if(typeof window==="undefined")return[];try{const v=JSON.parse(localStorage.getItem(SIGNAL_RULES_STORAGE_KEY)||"[]");return Array.isArray(v)?v:[]}catch{return[]}}
+function saveSignalRules(v){if(typeof window!=="undefined")try{localStorage.setItem(SIGNAL_RULES_STORAGE_KEY,JSON.stringify(v))}catch{}}
+function parseSignalText(text){
+ const s=String(text||""); const side=s.match(/\bXAUUSD\s+(BUY|SELL)\b/i); const en=s.match(/Entry\s*:\s*([0-9.,]+)\s*(?:-\s*([0-9.,]+))?/i);
+ const sl=s.match(/\bSL\s*:\s*([0-9.,]+)/i); const tps=[...s.matchAll(/\bTP\d*\s*:\s*([0-9.,]+)/gi)];
+ if(!side||!en)return null; const n=v=>Number(String(v).replace(",", ".")); const a=n(en[1]),b=en[2]?n(en[2]):a;
+ return {side:side[1].toLowerCase(),entryMin:Math.min(a,b),entryMax:Math.max(a,b),sl:sl?n(sl[1]):null,tps:tps.map(x=>n(x[1])).filter(Number.isFinite)};
+}
+
 function renderLucaLayoutBlob(trades, layout, deposit, credit, withdrawal) {
   const isAndroid = layout.startsWith("luca_android");
   const isIOS = layout.startsWith("luca_ios");
@@ -1006,6 +1017,11 @@ export default function LucaTradingAuto() {
   const [scenario3Side, setScenario3Side] = useState("auto");
   const [scenario3Open, setScenario3Open] = useState("");
   const [scenario3Close, setScenario3Close] = useState("");
+  const [signalText,setSignalText]=useState("");
+  const [signalStart,setSignalStart]=useState("");
+  const [signalEnd,setSignalEnd]=useState("");
+  const [signalRules,setSignalRules]=useState([]);
+
 
   const totalProfit = useMemo(() => trades.reduce((a, t) => a + Number(t.profit || 0), 0), [trades]);
 
@@ -1016,6 +1032,7 @@ export default function LucaTradingAuto() {
     };
 
     refreshUsedCandles();
+    setSignalRules(readSignalRules());
 
     // Se la pagina resta aperta oltre la mezzanotte, passa automaticamente
     // al nuovo archivio giornaliero senza richiedere il refresh.
@@ -1184,6 +1201,22 @@ export default function LucaTradingAuto() {
     }
   }
 
+
+  function addSignalRule(){
+    const p=parseSignalText(signalText); if(!p)return alert("Segnale non leggibile: servono XAUUSD BUY/SELL ed Entry.");
+    if(!signalStart)return alert("Indica data e ora di inizio.");
+    const start=new Date(signalStart), end=signalEnd?new Date(signalEnd):null;
+    if(Number.isNaN(start.getTime())||(end&&Number.isNaN(end.getTime())))return alert("Data/ora non valida.");
+    if(end&&end<=start)return alert("La fine deve essere successiva all'inizio.");
+    const rule={id:`${Date.now()}-${Math.random().toString(36).slice(2,8)}`,text:signalText.trim(),start:start.toISOString(),end:end?end.toISOString():null,...p};
+    const next=[...signalRules,rule].sort((a,b)=>new Date(a.start)-new Date(b.start)); setSignalRules(next);saveSignalRules(next);
+    setSignalText("");setSignalStart("");setSignalEnd("");
+  }
+  function stopSignalRule(id){
+    const next=signalRules.map(r=>r.id===id&&!r.end?{...r,end:new Date().toISOString()}:r);setSignalRules(next);saveSignalRules(next);
+  }
+  function removeSignalRule(id){const next=signalRules.filter(r=>r.id!==id);setSignalRules(next);saveSignalRules(next);}
+
   function scenarios() {
     return [
       { side: scenario1Side, open: scenario1Open, close: scenario1Close },
@@ -1244,6 +1277,7 @@ export default function LucaTradingAuto() {
           usedCandleKeys: Array.from(usedCandleSet),
           usedMarketValueKeys: Array.from(usedMarketValueSet),
           scenarios: scenarios(),
+          signalRules,
           settings: {
             screenCount: Number(screenCount || 1),
             autoPositive: Number(autoPositive || 0),
@@ -1452,6 +1486,22 @@ export default function LucaTradingAuto() {
           <span>1</span><select value={scenario1Side} onChange={e => setScenario1Side(e.target.value)}><option value="auto">Automatico</option><option value="buy">BUY</option><option value="sell">SELL</option></select><input type="number" step="0.01" value={scenario1Open} onChange={e => setScenario1Open(e.target.value)} placeholder="automatico"/><input type="number" step="0.01" value={scenario1Close} onChange={e => setScenario1Close(e.target.value)} placeholder="automatico"/>
           <span>2</span><select value={scenario2Side} onChange={e => setScenario2Side(e.target.value)}><option value="auto">Automatico</option><option value="buy">BUY</option><option value="sell">SELL</option></select><input type="number" step="0.01" value={scenario2Open} onChange={e => setScenario2Open(e.target.value)} placeholder="automatico"/><input type="number" step="0.01" value={scenario2Close} onChange={e => setScenario2Close(e.target.value)} placeholder="automatico"/>
           <span>3</span><select value={scenario3Side} onChange={e => setScenario3Side(e.target.value)}><option value="auto">Automatico</option><option value="buy">BUY</option><option value="sell">SELL</option></select><input type="number" step="0.01" value={scenario3Open} onChange={e => setScenario3Open(e.target.value)} placeholder="automatico"/><input type="number" step="0.01" value={scenario3Close} onChange={e => setScenario3Close(e.target.value)} placeholder="automatico"/>
+        </div>
+
+        <div style={{marginTop:"24px",paddingTop:"18px",borderTop:"1px solid #29415b"}}>
+          <h3>Range segnali operativi</h3>
+          <p className="hint">Indica inizio e, se conosciuta, fine. Senza fine il segnale resta valido. I range restano salvati anche dopo il refresh.</p>
+          <div className="grid">
+            <label style={{gridColumn:"span 2"}}>Testo segnale<textarea value={signalText} onChange={e=>setSignalText(e.target.value)} rows={8} style={{width:"100%",resize:"vertical"}} placeholder={"Apro una nuova operazione 🚀\nXAUUSD SELL\nEntry: 4155.11 - 4158.29\nSL: 4183.39\nTP1: 4154.57\nTP2: 4146.04\nTP3: 4116.72\nTP4: 4023.41"}/></label>
+            <label>Data e ora inizio<input type="datetime-local" value={signalStart} onChange={e=>setSignalStart(e.target.value)}/></label>
+            <label>Data e ora fine (facoltativa)<input type="datetime-local" value={signalEnd} onChange={e=>setSignalEnd(e.target.value)}/></label>
+          </div>
+          <div className="actions"><button type="button" className="primary" onClick={addSignalRule}>Salva range</button></div>
+          {signalRules.map(r=><div key={r.id} style={{border:"1px solid #29415b",borderRadius:"10px",padding:"12px",marginTop:"10px"}}>
+            <b>{r.side.toUpperCase()} · Entry {price(r.entryMin)} - {price(r.entryMax)}</b>
+            <div className="hint">{itDate(new Date(r.start),false)} → {r.end?itDate(new Date(r.end),false):"IN CORSO"}</div>
+            <div className="actions">{!r.end&&<button type="button" onClick={()=>stopSignalRule(r.id)}>Stop adesso</button>}<button type="button" onClick={()=>removeSignalRule(r.id)}>Elimina</button></div>
+          </div>)}
         </div>
 
         <div className="actions">
