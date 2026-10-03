@@ -294,13 +294,14 @@ function parseSignalText(text){
  return {side:side[1].toLowerCase(),entryMin:Math.min(a,b),entryMax:Math.max(a,b),sl:sl?n(sl[1]):null,tps:tps.map(x=>n(x[1])).filter(Number.isFinite)};
 }
 
-function renderLucaLayoutBlob(trades, layout, deposit, credit, withdrawal) {
+function renderLucaLayoutBlob(trades, layout, tab, deposit, credit, withdrawal) {
   const isAndroid = layout.startsWith("luca_android");
   const isIOS = layout.startsWith("luca_ios");
   const isDark = layout.endsWith("dark");
   if (!isAndroid && !isIOS) return null;
 
-  const ordered = [...trades].sort((a, b) => new Date(a.closeTime) - new Date(b.closeTime));
+  const orderedAll = [...trades].sort((a, b) => new Date(a.closeTime) - new Date(b.closeTime));
+  const ordered = (tab === "Day" || tab === "Week") ? orderedAll.slice(-9) : orderedAll;
   const totalProfit = ordered.reduce((sum, t) => sum + Number(t.profit || 0), 0);
   const depositValue = Number(deposit || 0);
   const creditValue = Number(credit || 0);
@@ -636,8 +637,7 @@ function renderLucaLayoutBlob(trades, layout, deposit, credit, withdrawal) {
     const summaryReserve = 280;
     const navTop = 1627;
     const summaryBottom = navTop - 38;
-    const maxRows = Math.min(ordered.length, Math.floor((summaryBottom - summaryReserve - startY) / rowH));
-    const visible = ordered.slice(0, Math.max(1, maxRows));
+    const visible = ordered.slice(-9);
 
     visible.forEach((t, i) => {
       const y = startY + i * rowH;
@@ -707,7 +707,7 @@ function renderLucaLayoutBlob(trades, layout, deposit, credit, withdrawal) {
 
 function renderReportBlob(trades, layout, tab, deposit, credit, withdrawal) {
   if (layout.startsWith("luca_android") || layout.startsWith("luca_ios")) {
-    return renderLucaLayoutBlob(trades, layout, deposit, credit, withdrawal);
+    return renderLucaLayoutBlob(trades, layout, tab, deposit, credit, withdrawal);
   }
 
   const totalProfit = trades.reduce((a, t) => a + Number(t.profit || 0), 0);
