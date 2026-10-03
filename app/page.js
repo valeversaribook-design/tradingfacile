@@ -302,7 +302,8 @@ function renderLucaLayoutBlob(trades, layout, tab, deposit, credit, withdrawal) 
 
   const orderedAll = [...trades].sort((a, b) => new Date(a.closeTime) - new Date(b.closeTime));
   const ordered = (tab === "Day" || tab === "Week") ? orderedAll.slice(-9) : orderedAll;
-  const totalProfit = ordered.reduce((sum, t) => sum + Number(t.profit || 0), 0);
+  // Il totale resta quello dell'intero periodo, anche quando mostriamo solo le ultime 9.
+  const totalProfit = orderedAll.reduce((sum, t) => sum + Number(t.profit || 0), 0);
   const depositValue = Number(deposit || 0);
   const creditValue = Number(credit || 0);
   const withdrawalValue = Number(withdrawal || 0);
@@ -714,6 +715,13 @@ function renderReportBlob(trades, layout, tab, deposit, credit, withdrawal) {
   const totalProfit = trades.reduce((a, t) => a + Number(t.profit || 0), 0);
   const balance = Number(deposit || 0) + Number(credit || 0) - Number(withdrawal || 0) + totalProfit;
 
+  // Giorno e Settimana: nello screen mostriamo SOLO le ultime 9 operazioni
+  // (ordinate cronologicamente), ma Profitto/Saldo restano calcolati su TUTTE.
+  const orderedAllForScreen = [...trades].sort((a, b) => new Date(a.closeTime) - new Date(b.closeTime));
+  const visibleTrades = (tab === "Day" || tab === "Week")
+    ? orderedAllForScreen.slice(-9)
+    : orderedAllForScreen;
+
   const isDark = layout.includes("dark");
   const isAndroid = layout.includes("android");
   const isMT5 = layout.includes("mt5");
@@ -832,7 +840,7 @@ function renderReportBlob(trades, layout, tab, deposit, credit, withdrawal) {
 
   function drawRows(startY) {
     const availableBottom = isAndroid && isDark ? 1460 : 1620;
-    const totalRows = trades.length;
+    const totalRows = visibleTrades.length;
     const baseRowH = isAndroid && isDark ? 116 : (isMT4 ? 132 : 88);
     const minRowH = isAndroid && isDark ? 82 : (isMT4 ? 92 : 70);
     const fitRowH = totalRows > 0
@@ -841,7 +849,7 @@ function renderReportBlob(trades, layout, tab, deposit, credit, withdrawal) {
 
     const rowH = Math.max(minRowH, Math.min(baseRowH, fitRowH));
     const maxRows = Math.max(1, Math.floor((availableBottom - startY) / rowH));
-    const rows = trades.slice(0, maxRows);
+    const rows = visibleTrades.slice(0, maxRows);
 
     rows.forEach((t, i) => {
       const y = startY + i * rowH;
