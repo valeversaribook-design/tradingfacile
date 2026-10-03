@@ -633,8 +633,9 @@ function renderLucaLayoutBlob(trades, layout, tab, deposit, credit, withdrawal) 
 
     // Operazioni: nessuna linea orizzontale; aria e proporzioni come screenshot.
     const startY = 369;
-    const rowH = 121;
-    const summaryReserve = 280;
+    // Con 9 operazioni dobbiamo riservare uno spazio fisso al riepilogo:
+    // le righe sono leggermente più compatte per evitare qualsiasi sovrapposizione.
+    const rowH = 105;
     const navTop = 1627;
     const summaryBottom = navTop - 38;
     const visible = ordered.slice(-9);
@@ -649,18 +650,18 @@ function renderLucaLayoutBlob(trades, layout, tab, deposit, credit, withdrawal) 
         ctx.fillRect(0, y + 4, 6, rowH - 8);
       }
 
-      txt("XAUUSD", 13, y + 40, 28, "700", text);
+      txt("XAUUSD", 13, y + 35, 28, "700", text);
       font(28, "700");
       const symbolW = ctx.measureText("XAUUSD").width;
-      txt(`${t.side} ${Number(t.lot).toFixed(2)}`, 13 + symbolW + 8, y + 40, 28, "700", sideColor);
-      txt(money(t.profit), 817, y + 40, 30, "700", profitColor, "right");
-      txt(`${fmtPrice(t.entry)} → ${fmtPrice(t.exit)}`, 13, y + 87, 27, "400", muted);
-      txt(reportDate(t.closeTime), 817, y + 87, 26, "400", muted, "right");
+      txt(`${t.side} ${Number(t.lot).toFixed(2)}`, 13 + symbolW + 8, y + 35, 28, "700", sideColor);
+      txt(money(t.profit), 817, y + 35, 30, "700", profitColor, "right");
+      txt(`${fmtPrice(t.entry)} → ${fmtPrice(t.exit)}`, 13, y + 78, 27, "400", muted);
+      txt(reportDate(t.closeTime), 817, y + 78, 26, "400", muted, "right");
     });
 
-    // Riepilogo immediatamente sotto l'ultima operazione, ma mai troppo in basso.
-    let summaryY = startY + visible.length * rowH + 22;
-    summaryY = Math.min(summaryY, summaryBottom - 215);
+    // Riepilogo sempre DOPO l'ultima operazione. Non viene più spinto verso l'alto:
+    // è l'altezza delle righe a garantire lo spazio necessario.
+    const summaryY = startY + visible.length * rowH + 28;
     const summaryRows = [
       ["Deposito", depositValue],
       ["Profitto", totalProfit],
