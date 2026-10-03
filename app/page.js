@@ -300,10 +300,14 @@ function renderLucaLayoutBlob(trades, layout, tab, deposit, credit, withdrawal) 
   const isDark = layout.endsWith("dark");
   if (!isAndroid && !isIOS) return null;
 
-  const orderedAll = [...trades].sort((a, b) => new Date(a.closeTime) - new Date(b.closeTime));
+  // IMPORTANTE: separiamo i dati usati per il totale da quelli usati solo a video.
+  // Il totale usa SEMPRE tutte le operazioni del periodo e non viene mai toccato dal limite di 9.
+  const allPeriodTrades = [...trades];
+  const totalProfit = allPeriodTrades.reduce((sum, t) => sum + Number(t.profit || 0), 0);
+
+  // Solo la parte grafica viene limitata alle ultime 9 operazioni.
+  const orderedAll = [...allPeriodTrades].sort((a, b) => new Date(a.closeTime) - new Date(b.closeTime));
   const ordered = (tab === "Day" || tab === "Week") ? orderedAll.slice(-9) : orderedAll;
-  // Il totale resta quello dell'intero periodo, anche quando mostriamo solo le ultime 9.
-  const totalProfit = orderedAll.reduce((sum, t) => sum + Number(t.profit || 0), 0);
   const depositValue = Number(deposit || 0);
   const creditValue = Number(credit || 0);
   const withdrawalValue = Number(withdrawal || 0);
@@ -639,7 +643,7 @@ function renderLucaLayoutBlob(trades, layout, tab, deposit, credit, withdrawal) 
     const rowH = 105;
     const navTop = 1627;
     const summaryBottom = navTop - 38;
-    const visible = ordered.slice(-9);
+    const visible = ordered;
 
     visible.forEach((t, i) => {
       const y = startY + i * rowH;
