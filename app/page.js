@@ -1034,6 +1034,7 @@ export default function LucaTradingAuto() {
   const [signalStart,setSignalStart]=useState("");
   const [signalEnd,setSignalEnd]=useState("");
   const [signalRules,setSignalRules]=useState([]);
+  const [includePreviousDayTrade, setIncludePreviousDayTrade] = useState(false);
 
 
   const totalProfit = useMemo(() => trades.reduce((a, t) => a + Number(t.profit || 0), 0), [trades]);
@@ -1256,16 +1257,17 @@ export default function LucaTradingAuto() {
   async function generateAuto() {
     if (!candles.length) return alert("Carica prima il CSV.");
 
-    const dayKeys = selectedDayKeys.length
-      ? selectedDayKeys
-      : dayOptions.map(d => d.key);
+    const allCsvDays = dayOptions.map(d => d.key).sort();
+    const latestCsvDay = allCsvDays.at(-1) || "";
+    const previousCsvDay = allCsvDays.at(-2) || "";
 
-    if (!dayKeys.length) return alert("Nessun giorno selezionato.");
+    if (!latestCsvDay) return alert("Nessun giorno disponibile nel CSV.");
     if (isGenerating) return;
 
-    const pools = dayKeys.map(day => ({
-      day,
-      candles: validTimePool(day).map(c => ({
+    // Le operazioni nuove normali vengono generate SOLO sull'ultimo giorno del CSV.
+    const pools = [{
+      day: latestCsvDay,
+      candles: validTimePool(latestCsvDay).map(c => ({
         id: c.id,
         time: c.time.toISOString(),
         open: c.open,
@@ -1273,10 +1275,46 @@ export default function LucaTradingAuto() {
         low: c.low,
         close: c.close
       }))
-    })).filter(group => group.candles.length >= 5);
+    }].filter(group => group.candles.length >= 5);
 
     if (!pools.length) {
-      return alert("Non ci sono abbastanza candele nel periodo e negli orari selezionati.");
+      return alert("Non ci sono abbastanza candele nell'ultimo giorno del CSV e negli orari selezionati.");
+    }
+
+    let previousDayPool = null;
+    if (includePreviousDayTrade) {
+      if (!previousCsvDay) {
+        return alert("Per usare l'operazione del giorno precedente il CSV deve contenere almeno due giorni.");
+      }
+
+      const previousCandles = candles
+        .filter(c => dayKey(c.time) === previousCsvDay)
+        .map(c => ({
+          id: c.id,
+          time: c.time.toISOString(),
+          open: c.open,
+          high: c.high,
+          low: c.low,
+          close: c.close
+        }));
+
+      if (previousCandles.length < 2) {
+        return alert("Nel giorno precedente non ci sono abbastanza candele.");
+      }
+
+      const hasPreviousSignal = signalRules.some(rule => {
+        const start = new Date(rule.start);
+        if (Number.isNaN(start.getTime())) return false;
+        const end = rule.end ? new Date(rule.end) : null;
+        return dayKey(start) === previousCsvDay ||
+          (end && !Number.isNaN(end.getTime()) && dayKey(end) === previousCsvDay);
+      });
+
+      if (!hasPreviousSignal) {
+        return alert("Non trovo in memoria un segnale operativo relativo al giorno precedente.");
+      }
+
+      previousDayPool = { day: previousCsvDay, candles: previousCandles };
     }
 
     setIsGenerating(true);
@@ -1291,6 +1329,8 @@ export default function LucaTradingAuto() {
           usedMarketValueKeys: Array.from(usedMarketValueSet),
           scenarios: scenarios(),
           signalRules,
+          includePreviousDayTrade,
+          previousDayPool,
           settings: {
             screenCount: Number(screenCount || 1),
             autoPositive: Number(autoPositive || 0),
@@ -1482,6 +1522,16 @@ export default function LucaTradingAuto() {
         </div>
 
         <h3>Generazione</h3>
+        <div style={{marginBottom:"14px"}}>
+          <label style={{display:"flex",alignItems:"center",gap:"10px",cursor:"pointer"}}>
+            <input
+              type="checkbox"
+              checked={includePreviousDayTrade}
+              onChange={e => setIncludePreviousDayTrade(e.target.checked)}
+            />
+            <span><b>Operazione aperta dal giorno precedente</b> — usa 1 operazione del penultimo giorno del CSV, basata sul segnale salvato in memoria. Le nuove operazioni restano solo nell'ultimo giorno.</span>
+          </label>
+        </div>
         <div className="grid">
           <label>Numero screen<input type="number" value={screenCount} onChange={e => setScreenCount(e.target.value)}/></label>
           <label>Positive per giorno<input type="number" value={autoPositive} onChange={e => setAutoPositive(e.target.value)}/></label>
