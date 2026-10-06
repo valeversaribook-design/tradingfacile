@@ -1035,6 +1035,7 @@ export default function LucaTradingAuto() {
   const [signalEnd,setSignalEnd]=useState("");
   const [signalRules,setSignalRules]=useState([]);
   const [includePreviousDayTrade, setIncludePreviousDayTrade] = useState(false);
+  const [operationPreference, setOperationPreference] = useState("auto");
 
 
   const totalProfit = useMemo(() => trades.reduce((a, t) => a + Number(t.profit || 0), 0), [trades]);
@@ -1331,6 +1332,7 @@ export default function LucaTradingAuto() {
           signalRules,
           includePreviousDayTrade,
           previousDayPool,
+          operationPreference,
           settings: {
             screenCount: Number(screenCount || 1),
             autoPositive: Number(autoPositive || 0),
@@ -1531,6 +1533,19 @@ export default function LucaTradingAuto() {
             />
             <span><b>Operazione aperta dal giorno precedente</b> — usa 1 operazione del penultimo giorno del CSV, basata sul segnale salvato in memoria. Le nuove operazioni restano solo nell'ultimo giorno.</span>
           </label>
+        </div>
+        <div style={{marginBottom:"14px",maxWidth:"360px"}}>
+          <label>
+            Preferenza operazioni
+            <select value={operationPreference} onChange={e => setOperationPreference(e.target.value)}>
+              <option value="auto">Automatico</option>
+              <option value="buy">BUY</option>
+              <option value="sell">SELL</option>
+            </select>
+          </label>
+          <p className="hint" style={{marginTop:"6px"}}>
+            Vale per tutte le operazioni generate: giorno corrente e, se attiva, operazione del giorno precedente.
+          </p>
         </div>
         <div className="grid">
           <label>Numero screen<input type="number" value={screenCount} onChange={e => setScreenCount(e.target.value)}/></label>
