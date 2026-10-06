@@ -112,6 +112,7 @@ function buildTrade({
   pool,
   scenario,
   signalRules,
+  operationPreference = "auto",
   reserved,
   reservedTimes,
   reservedMarketValues,
@@ -162,7 +163,11 @@ function buildTrade({
     const closePick = choose(laterCandidates);
     const exit = closePick.exit;
 
-    let side = activeSignal?.side ? String(activeSignal.side).toLowerCase() : (scenario?.side && scenario.side !== "auto" ? scenario.side : null);
+    let side = operationPreference === "buy" || operationPreference === "sell"
+      ? operationPreference
+      : (activeSignal?.side
+          ? String(activeSignal.side).toLowerCase()
+          : (scenario?.side && scenario.side !== "auto" ? scenario.side : null));
 
     if (!side) {
       side = wantPositive
@@ -205,6 +210,7 @@ function buildTrade({
 function buildPreviousDayTrade({
   group,
   signalRules,
+  operationPreference,
   reserved,
   reservedTimes,
   confirmedMarketValues,
@@ -246,6 +252,7 @@ function buildPreviousDayTrade({
       pool,
       scenario: { side: "auto", open: null, close: null },
       signalRules,
+      operationPreference,
       reserved: localReserved,
       reservedTimes: localTimes,
       reservedMarketValues: localValues,
@@ -276,6 +283,9 @@ export async function POST(request) {
 
     const signalRules = Array.isArray(body?.signalRules) ? body.signalRules : [];
     const includePreviousDayTrade = Boolean(body?.includePreviousDayTrade);
+    const operationPreference = ["buy", "sell"].includes(String(body?.operationPreference).toLowerCase())
+      ? String(body.operationPreference).toLowerCase()
+      : "auto";
     const previousDayPool = body?.previousDayPool && Array.isArray(body.previousDayPool.candles)
       ? body.previousDayPool
       : null;
@@ -352,6 +362,7 @@ export async function POST(request) {
               pool,
               scenario,
               signalRules,
+              operationPreference,
               reserved: attemptUsed,
               reservedTimes: attemptTimes,
               reservedMarketValues: dayMarketValues,
@@ -377,6 +388,7 @@ export async function POST(request) {
               pool,
               scenario,
               signalRules,
+              operationPreference,
               reserved: attemptUsed,
               reservedTimes: attemptTimes,
               reservedMarketValues: dayMarketValues,
@@ -432,6 +444,7 @@ export async function POST(request) {
           const previousTrade = buildPreviousDayTrade({
             group: previousDayPool,
             signalRules,
+            operationPreference,
             reserved: attemptUsed,
             reservedTimes: attemptTimes,
             confirmedMarketValues,
