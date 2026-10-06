@@ -8,7 +8,7 @@ const MAX_TRADE_ATTEMPTS = 520;
 
 // Evita operazioni troppo ravvicinate tra loro.
 // Il controllo viene fatto sugli orari di apertura e chiusura delle operazioni generate.
-const MIN_OPERATION_GAP_MINUTES = 5;
+const MIN_OPERATION_GAP_MINUTES = 3;
 const MIN_OPERATION_GAP_MS = MIN_OPERATION_GAP_MINUTES * 60 * 1000;
 
 function rand(min, max) {
@@ -231,7 +231,8 @@ function buildTrade({
 
 
 function buildPreviousDayTrade({
-  group,
+  previousGroup,
+  latestGroup,
   signalRules,
   operationPreference,
   reserved,
@@ -241,58 +242,104 @@ function buildPreviousDayTrade({
   lotMax,
   pointValue
 }) {
-  if (!group?.day || !Array.isArray(group.candles)) return null;
+  if (!previousGroup?.day || !latestGroup?.day) return null;
+  if (!Array.isArray(previousGroup.candles) || !Array.isArray(latestGroup.candles)) return null;
 
-  const day = String(group.day);
-  const dayPrefix = `${day}|`;
-  const dayMarketValues = new Set(
+  const previousDay = String(previousGroup.day);
+  const latestDay = String(latestGroup.day);
+
+  const previousValues = new Set(
     Array.from(confirmedMarketValues)
-      .filter(key => String(key).startsWith(dayPrefix))
-      .map(key => String(key).slice(dayPrefix.length))
+      .filter(key => String(key).startsWith(`${previousDay}|`))
+      .map(key => String(key).slice(previousDay.length + 1))
+  );
+  const latestValues = new Set(
+    Array.from(confirmedMarketValues)
+      .filter(key => String(key).startsWith(`${latestDay}|`))
+      .map(key => String(key).slice(latestDay.length + 1))
   );
 
-  // Per il giorno precedente usiamo soltanto candele coperte da un segnale
-  // già salvato in memoria. Non viene generata alcuna operazione casuale extra.
-  const pool = group.candles
-    .filter(c => {
-      if (!c?.id || !c?.time) return false;
-      const ms = new Date(c.time).getTime();
-      return Number.isFinite(ms) && signalRulesForTime(signalRules, ms, operationPreference).length > 0;
-    })
-    .sort((a, b) => new Date(a.time) - new Date(b.time));
+  const opens = previousGroup.candles
+    .filter(c => c?.id && c?.time)
+    .sort((a,b) => new Date(a.time) - new Date(b.time));
 
-  if (pool.length < 2) return null;
+  const closes = latestGroup.candles
+    .filter(c => c?.id && c?.time)
+    .sort((a,b) => new Date(a.time) - new Date(b.time));
 
-  // La singola operazione precedente NON entra nel conteggio positive/negative
-  // dell'ultimo giorno. Proviamo entrambi gli esiti e teniamo il primo valido.
-  for (const wantPositive of [true, false]) {
-    const localReserved = new Set(reserved);
-    const localTimes = new Set(reservedTimes);
-    const localValues = new Set(dayMarketValues);
+  if (!opens.length || !closes.length) return null;
 
-    const trade = buildTrade({
-      wantPositive,
-      pool,
-      scenario: { side: "auto", open: null, close: null },
-      signalRules,
-      operationPreference,
-      reserved: localReserved,
-      reservedTimes: localTimes,
-      reservedMarketValues: localValues,
-      lotMin,
-      lotMax,
-      pointValue
-    });
+  for (let attempt = 0; attempt < MAX_TRADE_ATTEMPTS; attempt += 1) {
+    const openCandle = choose(opens);
+    const openMs = new Date(openCandle.time).getTime();
+    if (!Number.isFinite(openMs) || !isTimeFarEnough(openMs, reservedTimes)) continue;
+    if (reserved.has(signature(openCandle))) continue;
 
-    if (trade) {
-      for (const key of localReserved) reserved.add(key);
-      for (const ms of localTimes) reservedTimes.add(ms);
-      confirmedMarketValues.add(`${day}|${marketValueKey(trade.entry)}`);
-      confirmedMarketValues.add(`${day}|${marketValueKey(trade.exit)}`);
-      return trade;
+    const rules = signalRulesForTime(signalRules, openMs, operationPreference);
+    if (!rules.length) continue;
+
+    const candidates = rules.map(signal => {
+      const entry = interiorPrice(openCandle, {
+        min: Number(signal.entryMin),
+        max: Number(signal.entryMax)
+      });
+      return entry === null ? null : {signal, entry};
+    }).filter(Boolean);
+
+    if (!candidates.length) continue;
+
+    const picked = choose(candidates);
+    const activeSignal = picked.signal;
+    const entry = picked.entry;
+    if (previousValues.has(marketValueKey(entry))) continue;
+
+    // FONDAMENTALE: la chiusura viene cercata ESCLUSIVAMENTE nell'ultimo giorno.
+    const exitCandidates = [];
+    for (const closeCandle of closes) {
+      const closeMs = new Date(closeCandle.time).getTime();
+      if (!Number.isFinite(closeMs) || closeMs <= openMs) continue;
+      if (!isTimeFarEnough(closeMs, reservedTimes)) continue;
+      if (reserved.has(signature(closeCandle))) continue;
+
+      const exit = interiorPrice(closeCandle, signalExitBounds(activeSignal));
+      if (exit === null) continue;
+      if (marketValueKey(exit) === marketValueKey(entry)) continue;
+      if (latestValues.has(marketValueKey(exit))) continue;
+
+      exitCandidates.push({candle: closeCandle, closeMs, exit});
     }
-  }
+    if (!exitCandidates.length) continue;
 
+    const closePick = choose(exitCandidates);
+    const exit = closePick.exit;
+    const side = operationPreference === "buy" || operationPreference === "sell"
+      ? operationPreference
+      : String(activeSignal.side).toLowerCase();
+
+    const lot = Number(rand(lotMin, lotMax).toFixed(2));
+    const profit = Number(pnl(side, entry, exit, lot, pointValue).toFixed(2));
+    if (profit === 0) continue;
+
+    reserved.add(signature(openCandle));
+    reserved.add(signature(closePick.candle));
+    reservedTimes.add(openMs);
+    reservedTimes.add(closePick.closeMs);
+    confirmedMarketValues.add(`${previousDay}|${marketValueKey(entry)}`);
+    confirmedMarketValues.add(`${latestDay}|${marketValueKey(exit)}`);
+
+    return {
+      side, lot,
+      openCandleId: openCandle.id,
+      closeCandleId: closePick.candle.id,
+      openTime: withRandomSecond(openCandle.time),
+      closeTime: withRandomSecond(closePick.candle.time),
+      entry, exit,
+      entrySource: "intermedio",
+      exitSource: "intermedio",
+      profit,
+      carriedFromPreviousDay: true
+    };
+  }
   return null;
 }
 
@@ -465,7 +512,8 @@ export async function POST(request) {
           if (!previousDayPool) continue;
 
           const previousTrade = buildPreviousDayTrade({
-            group: previousDayPool,
+            previousGroup: previousDayPool,
+            latestGroup: validGroups[0],
             signalRules,
             operationPreference,
             reserved: attemptUsed,
@@ -484,10 +532,9 @@ export async function POST(request) {
           (a, b) => new Date(a.closeTime).getTime() - new Date(b.closeTime).getTime()
         );
 
-        const normalDayTrades = includePreviousDayTrade ? trades.filter(t => {
-          const openDay = new Date(t.openTime).toISOString().slice(0, 10);
-          return !previousDayPool?.day || openDay !== String(previousDayPool.day);
-        }) : trades;
+        const normalDayTrades = includePreviousDayTrade
+          ? trades.filter(t => !t.carriedFromPreviousDay)
+          : trades;
         const totalForGeneration = normalDayTrades.reduce((sum, trade) => sum + Number(trade.profit || 0), 0);
 
         if (totalForGeneration >= profitMin && totalForGeneration <= profitMax) {
