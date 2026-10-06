@@ -201,6 +201,71 @@ function buildTrade({
   return null;
 }
 
+
+function buildPreviousDayTrade({
+  group,
+  signalRules,
+  reserved,
+  reservedTimes,
+  confirmedMarketValues,
+  lotMin,
+  lotMax,
+  pointValue
+}) {
+  if (!group?.day || !Array.isArray(group.candles)) return null;
+
+  const day = String(group.day);
+  const dayPrefix = `${day}|`;
+  const dayMarketValues = new Set(
+    Array.from(confirmedMarketValues)
+      .filter(key => String(key).startsWith(dayPrefix))
+      .map(key => String(key).slice(dayPrefix.length))
+  );
+
+  // Per il giorno precedente usiamo soltanto candele coperte da un segnale
+  // già salvato in memoria. Non viene generata alcuna operazione casuale extra.
+  const pool = group.candles
+    .filter(c => {
+      if (!c?.id || !c?.time) return false;
+      const ms = new Date(c.time).getTime();
+      return Number.isFinite(ms) && Boolean(signalRuleForTime(signalRules, ms));
+    })
+    .sort((a, b) => new Date(a.time) - new Date(b.time));
+
+  if (pool.length < 2) return null;
+
+  // La singola operazione precedente NON entra nel conteggio positive/negative
+  // dell'ultimo giorno. Proviamo entrambi gli esiti e teniamo il primo valido.
+  for (const wantPositive of [true, false]) {
+    const localReserved = new Set(reserved);
+    const localTimes = new Set(reservedTimes);
+    const localValues = new Set(dayMarketValues);
+
+    const trade = buildTrade({
+      wantPositive,
+      pool,
+      scenario: { side: "auto", open: null, close: null },
+      signalRules,
+      reserved: localReserved,
+      reservedTimes: localTimes,
+      reservedMarketValues: localValues,
+      lotMin,
+      lotMax,
+      pointValue
+    });
+
+    if (trade) {
+      for (const key of localReserved) reserved.add(key);
+      for (const ms of localTimes) reservedTimes.add(ms);
+      confirmedMarketValues.add(`${day}|${marketValueKey(trade.entry)}`);
+      confirmedMarketValues.add(`${day}|${marketValueKey(trade.exit)}`);
+      return trade;
+    }
+  }
+
+  return null;
+}
+
 export async function POST(request) {
   try {
     const body = await request.json();
@@ -210,6 +275,10 @@ export async function POST(request) {
       : [{ side: "auto", open: null, close: null }];
 
     const signalRules = Array.isArray(body?.signalRules) ? body.signalRules : [];
+    const includePreviousDayTrade = Boolean(body?.includePreviousDayTrade);
+    const previousDayPool = body?.previousDayPool && Array.isArray(body.previousDayPool.candles)
+      ? body.previousDayPool
+      : null;
     const settings = body?.settings || {};
     const screenCount = Math.max(1, Math.min(50, Number(settings.screenCount || 1)));
     const autoPositive = Math.max(0, Math.min(50, Number(settings.autoPositive || 0)));
@@ -355,13 +424,37 @@ export async function POST(request) {
           continue;
         }
 
+        // Opzionale: aggiunge UNA sola operazione del giorno precedente.
+        // Non modifica il conteggio richiesto di positive/negative dell'ultimo giorno.
+        if (includePreviousDayTrade) {
+          if (!previousDayPool) continue;
+
+          const previousTrade = buildPreviousDayTrade({
+            group: previousDayPool,
+            signalRules,
+            reserved: attemptUsed,
+            reservedTimes: attemptTimes,
+            confirmedMarketValues,
+            lotMin,
+            lotMax,
+            pointValue
+          });
+
+          if (!previousTrade) continue;
+          trades.push(previousTrade);
+        }
+
         trades.sort(
           (a, b) => new Date(a.closeTime).getTime() - new Date(b.closeTime).getTime()
         );
 
-        const total = trades.reduce((sum, trade) => sum + Number(trade.profit || 0), 0);
+        const normalDayTrades = includePreviousDayTrade ? trades.filter(t => {
+          const openDay = new Date(t.openTime).toISOString().slice(0, 10);
+          return !previousDayPool?.day || openDay !== String(previousDayPool.day);
+        }) : trades;
+        const totalForGeneration = normalDayTrades.reduce((sum, trade) => sum + Number(trade.profit || 0), 0);
 
-        if (total >= profitMin && total <= profitMax) {
+        if (totalForGeneration >= profitMin && totalForGeneration <= profitMax) {
           best = trades;
           for (const key of attemptUsed) confirmedUsed.add(key);
 
