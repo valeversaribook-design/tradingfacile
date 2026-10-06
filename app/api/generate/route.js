@@ -4,7 +4,7 @@ export const runtime = "nodejs";
 export const maxDuration = 30;
 
 const MAX_SCREEN_ATTEMPTS = 180;
-const MAX_TRADE_ATTEMPTS = 320;
+const MAX_TRADE_ATTEMPTS = 520;
 
 // Evita operazioni troppo ravvicinate tra loro.
 // Il controllo viene fatto sugli orari di apertura e chiusura delle operazioni generate.
@@ -98,9 +98,18 @@ function marketValueKey(value) {
 }
 
 
-function signalRuleForTime(rules,timeMs){
- const m=(Array.isArray(rules)?rules:[]).filter(r=>{const s=new Date(r?.start).getTime(),e=r?.end?new Date(r.end).getTime():Infinity;return Number.isFinite(s)&&timeMs>=s&&timeMs<=e});
- return m.length?m.sort((a,b)=>new Date(b.start)-new Date(a.start))[0]:null;
+function signalRulesForTime(rules, timeMs, operationPreference = "auto") {
+  return (Array.isArray(rules) ? rules : [])
+    .filter(rule => {
+      const start = new Date(rule?.start).getTime();
+      const end = rule?.end ? new Date(rule.end).getTime() : Infinity;
+      if (!Number.isFinite(start) || timeMs < start || timeMs > end) return false;
+      const side = String(rule?.side || "").toLowerCase();
+      if (operationPreference === "buy" && side !== "buy") return false;
+      if (operationPreference === "sell" && side !== "sell") return false;
+      return side === "buy" || side === "sell";
+    })
+    .sort(() => Math.random() - 0.5);
 }
 function signalExitBounds(r){
  if(!r)return null; const vals=[Number(r.entryMin),Number(r.entryMax),Number(r.sl),...(Array.isArray(r.tps)?r.tps.map(Number):[])].filter(Number.isFinite);
@@ -134,9 +143,23 @@ function buildTrade({
 
     if (!Number.isFinite(openMs) || !isTimeFarEnough(openMs, reservedTimes)) continue;
 
-    const activeSignal = signalRuleForTime(signalRules, openMs);
-    const entryBounds = activeSignal ? {min:Number(activeSignal.entryMin),max:Number(activeSignal.entryMax)} : bounds;
-    const entry = interiorPrice(openCandle, entryBounds);
+    const validSignals = signalRulesForTime(signalRules, openMs, operationPreference);
+    const signalCandidates = validSignals.length
+      ? validSignals.map(signal => {
+          const entry = interiorPrice(openCandle, {
+            min: Number(signal.entryMin),
+            max: Number(signal.entryMax)
+          });
+          return entry === null ? null : { signal, entry };
+        }).filter(Boolean)
+      : [];
+
+    if (validSignals.length && !signalCandidates.length) continue;
+
+    const pickedSignal = signalCandidates.length ? choose(signalCandidates) : null;
+    const activeSignal = pickedSignal?.signal || null;
+    const entry = pickedSignal ? pickedSignal.entry : interiorPrice(openCandle, bounds);
+
     if (entry === null) continue;
     if (reservedMarketValues.has(marketValueKey(entry))) continue;
 
@@ -234,7 +257,7 @@ function buildPreviousDayTrade({
     .filter(c => {
       if (!c?.id || !c?.time) return false;
       const ms = new Date(c.time).getTime();
-      return Number.isFinite(ms) && Boolean(signalRuleForTime(signalRules, ms));
+      return Number.isFinite(ms) && signalRulesForTime(signalRules, ms, operationPreference).length > 0;
     })
     .sort((a, b) => new Date(a.time) - new Date(b.time));
 
