@@ -86,6 +86,24 @@ function interiorPrice(candle, bounds = null) {
   return Number(rand(innerLow, innerHigh).toFixed(2));
 }
 
+
+function stopLossHit(candle, side, stopLoss) {
+  const sl = Number(stopLoss);
+  if (!Number.isFinite(sl)) return false;
+  const high = Number(candle?.high);
+  const low = Number(candle?.low);
+  if (!Number.isFinite(high) || !Number.isFinite(low)) return false;
+  return side === "sell" ? high >= sl : low <= sl;
+}
+
+function stopLossExitPrice(candle, side, stopLoss) {
+  const sl = Number(stopLoss);
+  if (!Number.isFinite(sl)) return null;
+  // Se la candela ha attraversato lo SL, la chiusura viene registrata allo SL.
+  // L'orario è quello della candela che lo ha raggiunto (con secondo casuale come nel resto dell'app).
+  return Number(sl.toFixed(2));
+}
+
 function isTimeFarEnough(candidateMs, usedTimes) {
   for (const usedMs of usedTimes) {
     if (Math.abs(candidateMs - usedMs) < MIN_OPERATION_GAP_MS) return false;
@@ -121,6 +139,7 @@ function buildTrade({
   pool,
   scenario,
   signalRules,
+  sourceMode = "auto",
   operationPreference = "auto",
   reserved,
   reservedTimes,
@@ -144,28 +163,35 @@ function buildTrade({
     if (!Number.isFinite(openMs) || !isTimeFarEnough(openMs, reservedTimes)) continue;
 
     const validSignals = signalRulesForTime(signalRules, openMs, operationPreference);
-    const signalCandidates = validSignals.length
-      ? validSignals.map(signal => {
-          const entry = interiorPrice(openCandle, {
-            min: Number(signal.entryMin),
-            max: Number(signal.entryMax)
-          });
-          return entry === null ? null : { signal, entry };
-        }).filter(Boolean)
-      : [];
+    const signalCandidates = validSignals.map(signal => {
+      const entry = interiorPrice(openCandle, { min: Number(signal.entryMin), max: Number(signal.entryMax) });
+      return entry === null ? null : { signal, entry };
+    }).filter(Boolean);
 
-    if (validSignals.length && !signalCandidates.length) continue;
-
-    const pickedSignal = signalCandidates.length ? choose(signalCandidates) : null;
-    const activeSignal = pickedSignal?.signal || null;
-    const entry = pickedSignal ? pickedSignal.entry : interiorPrice(openCandle, bounds);
-
+    let activeSignal = null;
+    let entry = null;
+    if (sourceMode === "signals") {
+      if (!signalCandidates.length) continue;
+      const pickedSignal = choose(signalCandidates);
+      activeSignal = pickedSignal.signal;
+      entry = pickedSignal.entry;
+    } else if (sourceMode === "scenario") {
+      entry = interiorPrice(openCandle, bounds);
+    } else {
+      entry = interiorPrice(openCandle, null);
+    }
     if (entry === null) continue;
     if (reservedMarketValues.has(marketValueKey(entry))) continue;
 
-    // La chiusura deve essere successiva e non troppo vicina né alle altre operazioni
-    // né all'apertura della stessa operazione.
+    // La chiusura viene cercata in ordine cronologico.
+    // Se prima della chiusura il prezzo raggiunge lo SL del segnale, l'operazione
+    // viene chiusa obbligatoriamente in quella candela allo Stop Loss.
     const laterCandidates = [];
+    let forcedStop = null;
+    const sideForStop = operationPreference === "buy" || operationPreference === "sell"
+      ? operationPreference
+      : (activeSignal?.side ? String(activeSignal.side).toLowerCase() : null);
+
     for (let i = openIndex + 1; i < available.length; i += 1) {
       const candle = available[i];
       const closeMs = new Date(candle.time).getTime();
@@ -173,24 +199,31 @@ function buildTrade({
       if (closeMs - openMs < MIN_OPERATION_GAP_MS) continue;
       if (!isTimeFarEnough(closeMs, reservedTimes)) continue;
 
+      if (activeSignal && sideForStop && stopLossHit(candle, sideForStop, activeSignal.sl)) {
+        const stopExit = stopLossExitPrice(candle, sideForStop, activeSignal.sl);
+        if (stopExit !== null && !reservedMarketValues.has(marketValueKey(stopExit))) {
+          forcedStop = { candle, closeMs, exit: stopExit, stoppedOut: true };
+        }
+        break; // Dopo lo SL non è consentita alcuna chiusura successiva.
+      }
+
       const exit = interiorPrice(candle, activeSignal ? signalExitBounds(activeSignal) : bounds);
       if (exit === null) continue;
       if (marketValueKey(exit) === marketValueKey(entry)) continue;
       if (reservedMarketValues.has(marketValueKey(exit))) continue;
-
-      laterCandidates.push({ candle, closeMs, exit });
+      laterCandidates.push({ candle, closeMs, exit, stoppedOut: false });
     }
 
-    if (!laterCandidates.length) continue;
+    if (!forcedStop && !laterCandidates.length) continue;
 
-    const closePick = choose(laterCandidates);
+    const closePick = forcedStop || choose(laterCandidates);
     const exit = closePick.exit;
 
     let side = operationPreference === "buy" || operationPreference === "sell"
       ? operationPreference
-      : (activeSignal?.side
+      : (sourceMode === "signals" && activeSignal?.side
           ? String(activeSignal.side).toLowerCase()
-          : (scenario?.side && scenario.side !== "auto" ? scenario.side : null));
+          : (sourceMode === "scenario" && scenario?.side && scenario.side !== "auto" ? scenario.side : null));
 
     if (!side) {
       side = wantPositive
@@ -229,6 +262,18 @@ function buildTrade({
   return null;
 }
 
+
+function buildTradeByPriority({ wantPositive, pool, scenarios, signalRules, scenarioCursorRef, reserved, reservedTimes, reservedMarketValues, lotMin, lotMax, pointValue, operationPreference }) {
+  let trade = buildTrade({ wantPositive, pool, scenario:null, signalRules, sourceMode:"signals", operationPreference, reserved, reservedTimes, reservedMarketValues, lotMin, lotMax, pointValue });
+  if (trade) return trade;
+  const usable=(Array.isArray(scenarios)?scenarios:[]).filter(x => (x?.side && x.side!=="auto") || Number.isFinite(Number(x?.open)) || Number.isFinite(Number(x?.close)));
+  for (let i=0;i<usable.length;i++) {
+    const scenario=usable[scenarioCursorRef.value++ % usable.length];
+    trade=buildTrade({ wantPositive, pool, scenario, signalRules:[], sourceMode:"scenario", operationPreference, reserved, reservedTimes, reservedMarketValues, lotMin, lotMax, pointValue });
+    if (trade) return trade;
+  }
+  return buildTrade({ wantPositive, pool, scenario:null, signalRules:[], sourceMode:"auto", operationPreference, reserved, reservedTimes, reservedMarketValues, lotMin, lotMax, pointValue });
+}
 
 function buildPreviousDayTrade({
   previousGroup,
@@ -294,27 +339,37 @@ function buildPreviousDayTrade({
     if (previousValues.has(marketValueKey(entry))) continue;
 
     // FONDAMENTALE: la chiusura viene cercata ESCLUSIVAMENTE nell'ultimo giorno.
+    // Se lo SL viene raggiunto prima di una chiusura scelta, chiudiamo obbligatoriamente lì.
+    const side = operationPreference === "buy" || operationPreference === "sell"
+      ? operationPreference
+      : String(activeSignal.side).toLowerCase();
     const exitCandidates = [];
+    let forcedStop = null;
+
     for (const closeCandle of closes) {
       const closeMs = new Date(closeCandle.time).getTime();
       if (!Number.isFinite(closeMs) || closeMs <= openMs) continue;
       if (!isTimeFarEnough(closeMs, reservedTimes)) continue;
       if (reserved.has(signature(closeCandle))) continue;
 
+      if (stopLossHit(closeCandle, side, activeSignal.sl)) {
+        const stopExit = stopLossExitPrice(closeCandle, side, activeSignal.sl);
+        if (stopExit !== null && !latestValues.has(marketValueKey(stopExit))) {
+          forcedStop = {candle: closeCandle, closeMs, exit: stopExit, stoppedOut: true};
+        }
+        break;
+      }
+
       const exit = interiorPrice(closeCandle, signalExitBounds(activeSignal));
       if (exit === null) continue;
       if (marketValueKey(exit) === marketValueKey(entry)) continue;
       if (latestValues.has(marketValueKey(exit))) continue;
-
-      exitCandidates.push({candle: closeCandle, closeMs, exit});
+      exitCandidates.push({candle: closeCandle, closeMs, exit, stoppedOut: false});
     }
-    if (!exitCandidates.length) continue;
+    if (!forcedStop && !exitCandidates.length) continue;
 
-    const closePick = choose(exitCandidates);
+    const closePick = forcedStop || choose(exitCandidates);
     const exit = closePick.exit;
-    const side = operationPreference === "buy" || operationPreference === "sell"
-      ? operationPreference
-      : String(activeSignal.side).toLowerCase();
 
     const lot = Number(rand(lotMin, lotMax).toFixed(2));
     const profit = Number(pnl(side, entry, exit, lot, pointValue).toFixed(2));
@@ -426,20 +481,13 @@ export async function POST(request) {
           );
 
           for (let index = 0; index < autoPositive; index += 1) {
-            const scenario = scenarios[scenarioCursor++ % scenarios.length];
-            const trade = buildTrade({
-              wantPositive: true,
-              pool,
-              scenario,
-              signalRules,
-              operationPreference,
-              reserved: attemptUsed,
-              reservedTimes: attemptTimes,
-              reservedMarketValues: dayMarketValues,
-              lotMin,
-              lotMax,
-              pointValue
+            const scenarioCursorRef = { value: scenarioCursor };
+            const trade = buildTradeByPriority({
+              wantPositive: true, pool, scenarios, signalRules, scenarioCursorRef,
+              reserved: attemptUsed, reservedTimes: attemptTimes, reservedMarketValues: dayMarketValues,
+              lotMin, lotMax, pointValue, operationPreference
             });
+            scenarioCursor = scenarioCursorRef.value;
 
             if (!trade) {
               attemptValid = false;
@@ -452,20 +500,13 @@ export async function POST(request) {
           if (!attemptValid) break;
 
           for (let index = 0; index < autoNegative; index += 1) {
-            const scenario = scenarios[scenarioCursor++ % scenarios.length];
-            const trade = buildTrade({
-              wantPositive: false,
-              pool,
-              scenario,
-              signalRules,
-              operationPreference,
-              reserved: attemptUsed,
-              reservedTimes: attemptTimes,
-              reservedMarketValues: dayMarketValues,
-              lotMin,
-              lotMax,
-              pointValue
+            const scenarioCursorRef = { value: scenarioCursor };
+            const trade = buildTradeByPriority({
+              wantPositive: false, pool, scenarios, signalRules, scenarioCursorRef,
+              reserved: attemptUsed, reservedTimes: attemptTimes, reservedMarketValues: dayMarketValues,
+              lotMin, lotMax, pointValue, operationPreference
             });
+            scenarioCursor = scenarioCursorRef.value;
 
             if (!trade) {
               attemptValid = false;
