@@ -998,6 +998,7 @@ export default function LucaTradingAuto() {
   const [usedCandleKeys, setUsedCandleKeys] = useState([]);
   const [usedMarketValueKeys, setUsedMarketValueKeys] = useState([]);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [generationProgress, setGenerationProgress] = useState("");
 
   const [layout, setLayout] = useState("ios_mt5_white");
   const [tab, setTab] = useState("Week");
@@ -1319,37 +1320,94 @@ export default function LucaTradingAuto() {
     setIsGenerating(true);
 
     try {
-      const response = await fetch("/api/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          pools,
-          usedCandleKeys: Array.from(usedCandleSet),
-          usedMarketValueKeys: Array.from(usedMarketValueSet),
-          scenarios: scenarios(),
-          signalRules,
-          includePreviousDayTrade,
-          previousDayPool,
-          operationPreference,
-          settings: {
-            screenCount: Number(screenCount || 1),
-            autoPositive: Number(autoPositive || 0),
-            autoNegative: Number(autoNegative || 0),
-            profitMin: Number(profitMin),
-            profitMax: Number(profitMax),
-            lotMin: Number(lotMin),
-            lotMax: Number(lotMax),
-            pointValue: Number(pointValue)
-          }
-        })
-      });
-
-      const result = await response.json();
-
-      if (!response.ok) {
-        throw new Error(result?.error || "Errore durante la generazione.");
+      // Ogni giornata e' una richiesta indipendente: Vercel non deve elaborare tutta
+      // la settimana in una singola funzione. Il totale viene verificato alla fine.
+      const requestedScreens = Math.max(1, Number(screenCount || 1));
+      const targetMin = Number(profitMin);
+      const targetMax = Number(profitMax);
+      const candidateGroups = [];
+      const common = {
+        scenarios: scenarios(), signalRules, operationPreference,
+        settings: {
+          screenCount: 6, autoPositive: Number(autoPositive || 0),
+          autoNegative: Number(autoNegative || 0), profitMin: targetMin,
+          profitMax: targetMax, lotMin: Number(lotMin), lotMax: Number(lotMax),
+          pointValue: Number(pointValue)
+        }
+      };
+      async function requestGeneration(payload) {
+        const response = await fetch("/api/generate", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        const raw = await response.text();
+        let data;
+        try { data = JSON.parse(raw); }
+        catch {
+          throw new Error(`Risposta server non valida (HTTP ${response.status}). ` +
+            (response.status >= 500 ? "Possibile timeout Vercel." : raw.slice(0, 120)));
+        }
+        if (!response.ok) throw new Error(data?.error || `Errore HTTP ${response.status}`);
+        return data;
       }
-
+      for (let dayIndex = 0; dayIndex < pools.length; dayIndex++) {
+        const group = pools[dayIndex];
+        setGenerationProgress(`Giorno ${dayIndex + 1}/${pools.length}: ${group.day}`);
+        const dayResult = await requestGeneration({
+          ...common, mode: "dailyCandidates", pools: [group],
+          includePreviousDayTrade: false,
+          usedCandleKeys: Array.from(usedCandleSet),
+          usedMarketValueKeys: Array.from(usedMarketValueSet)
+        });
+        if (!dayResult.sets?.length) {
+          throw new Error(`Nessuna combinazione valida per ${group.day}. ` +
+            "I giorni gia' elaborati non sono stati salvati come risultati completi.");
+        }
+        candidateGroups.push(dayResult.sets.map(s => s.trades));
+      }
+      // Ricerca di combinazioni su tutta la settimana (non per giorno).
+      // Beam search: conserva piu' alternative per non fissare prematuramente un giorno.
+      let combinations = [{ trades: [], profit: 0 }];
+      for (const group of candidateGroups) {
+        const expanded = [];
+        for (const combo of combinations) for (const option of group) {
+          const profit = combo.profit + option.reduce((s,t) => s + Number(t.profit || 0), 0);
+          expanded.push({ trades: [...combo.trades, ...option], profit });
+        }
+        const expectedAtStage = (targetMin + targetMax) / 2 *
+          (expanded[0]?.trades.length / Math.max(1, pools.length *
+            (Number(autoPositive || 0) + Number(autoNegative || 0))));
+        expanded.sort((a,b) => Math.abs(a.profit-expectedAtStage)-Math.abs(b.profit-expectedAtStage));
+        combinations = expanded.slice(0, 120);
+      }
+      const distance = x => x < targetMin ? targetMin-x : x > targetMax ? x-targetMax : 0;
+      combinations.sort((a,b) => distance(a.profit)-distance(b.profit));
+      const chosen = combinations.slice(0, requestedScreens);
+      if (!chosen.length) throw new Error("Nessuna combinazione settimanale disponibile.");
+      // L'operazione overnight richiede un controllo separato e non va inventata.
+      if (includePreviousDayTrade) {
+        throw new Error("La modalita' giorno precedente non e' ancora compatibile con la generazione settimanale separata. Disattiva il flag per questa generazione.");
+      }
+      const result = {
+        sets: chosen.map((c,i) => ({
+          name: `screen_${String(i+1).padStart(2,"0")}`, trades: c.trades
+        })),
+        usedCandleKeys: Array.from(new Set([...usedCandleSet,
+          ...chosen.flatMap(c => c.trades.flatMap(t => [t.openCandleId,t.closeCandleId]) )
+            .filter(Boolean).flatMap(id => {
+              const c = candles.find(x => x.id === id);
+              return c ? [candleSignature(c)] : [];
+            })])),
+        usedMarketValueKeys: Array.from(new Set([...usedMarketValueSet,
+          ...chosen.flatMap(c => c.trades.flatMap(t => [
+            dayMarketValueKey(dayKey(new Date(t.openTime)),t.entry),
+            dayMarketValueKey(dayKey(new Date(t.closeTime)),t.exit)
+          ]))])),
+        partial: chosen.length < requestedScreens,
+        outsideRange: distance(chosen[0].profit) > 0,
+        actualProfit: chosen[0].profit
+      };
+      setGenerationProgress("");
       const created = (result.sets || []).map(set => ({
         ...set,
         trades: set.trades.map(t => ({
@@ -1379,6 +1437,9 @@ export default function LucaTradingAuto() {
         )
       );
 
+      if (result.outsideRange) {
+        alert(`Combinazione piu' vicina trovata: ${money(result.actualProfit)}. Fuori dal range settimanale ${money(targetMin)}–${money(targetMax)}.`);
+      }
       if (result.partial) {
         alert(`Generate ${created.length} schermate su ${Number(screenCount || 1)}. Prova ad allargare i vincoli per ottenere le altre.`);
       }
@@ -1386,6 +1447,7 @@ export default function LucaTradingAuto() {
       console.error(error);
       alert(error?.message || "Il backend non ha completato la generazione.");
     } finally {
+      setGenerationProgress("");
       setIsGenerating(false);
     }
   }
@@ -1522,6 +1584,7 @@ export default function LucaTradingAuto() {
         </div>
 
         <h3>Generazione</h3>
+        {generationProgress && <p role="status">{generationProgress}</p>}
         <div style={{marginBottom:"14px"}}>
           <label style={{display:"flex",alignItems:"center",gap:"10px",cursor:"pointer"}}>
             <input
