@@ -4,6 +4,7 @@ export const runtime = "nodejs";
 export const maxDuration = 30;
 
 const MAX_SCREEN_ATTEMPTS = 180;
+const GENERATION_BUDGET_MS = 22000;
 const MAX_TRADE_ATTEMPTS = 520;
 
 // Evita operazioni troppo ravvicinate tra loro.
@@ -88,6 +89,7 @@ function interiorPrice(candle, bounds = null) {
 
 
 function stopLossHit(candle, side, stopLoss) {
+  if (stopLoss === null || stopLoss === undefined || stopLoss === "") return false;
   const sl = Number(stopLoss);
   if (!Number.isFinite(sl)) return false;
   const high = Number(candle?.high);
@@ -97,6 +99,7 @@ function stopLossHit(candle, side, stopLoss) {
 }
 
 function stopLossExitPrice(candle, side, stopLoss) {
+  if (stopLoss === null || stopLoss === undefined || stopLoss === "") return null;
   const sl = Number(stopLoss);
   if (!Number.isFinite(sl)) return null;
   // Se la candela ha attraversato lo SL, la chiusura viene registrata allo SL.
@@ -448,6 +451,8 @@ export async function POST(request) {
     );
 
     const sets = [];
+    const deadline = Date.now() + GENERATION_BUDGET_MS;
+    let timeBudgetReached = false;
 
     for (let screenIndex = 0; screenIndex < screenCount; screenIndex += 1) {
       let best = null;
@@ -455,6 +460,7 @@ export async function POST(request) {
       let bestDailyResults = [];
 
       for (let attempt = 0; attempt < MAX_SCREEN_ATTEMPTS; attempt += 1) {
+        if (Date.now() >= deadline) { timeBudgetReached = true; break; }
         const trades = [];
         const attemptUsed = new Set(confirmedUsed);
         const attemptTimes = new Set();
@@ -467,6 +473,7 @@ export async function POST(request) {
         let attemptValid = validGroups.length > 0;
 
         for (const group of validGroups) {
+          if (Date.now() >= deadline) { timeBudgetReached = true; attemptValid = false; break; }
           const pool = group.candles
             .filter(c => c?.id && c?.time)
             .sort((a, b) => new Date(a.time) - new Date(b.time));
@@ -622,14 +629,18 @@ export async function POST(request) {
           profitRangeFullyMet: bestScore === 0
         });
       }
+      if (timeBudgetReached) break;
     }
 
     return NextResponse.json({
       sets,
+      timeBudgetReached,
       usedCandleKeys: Array.from(confirmedUsed),
       usedMarketValueKeys: Array.from(confirmedMarketValues),
       partial: sets.length < screenCount,
-      message: sets.length
+      message: timeBudgetReached && !sets.length
+        ? "Tempo massimo raggiunto. Nessuna combinazione completa trovata: riduci gli screen o amplia i vincoli."
+        : sets.length
         ? (sets.some(s => !s.profitRangeFullyMet)
           ? "Alcune giornate non hanno raggiunto il profitto richiesto: consulta dailyResults."
           : null)
