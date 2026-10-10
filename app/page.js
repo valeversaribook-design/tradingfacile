@@ -1265,22 +1265,20 @@ export default function LucaTradingAuto() {
     if (!latestCsvDay) return alert("Nessun giorno disponibile nel CSV.");
     if (isGenerating) return;
 
-    // Le operazioni nuove normali vengono generate SOLO sull'ultimo giorno del CSV.
-    const pools = [{
-      day: latestCsvDay,
-      candles: validTimePool(latestCsvDay).map(c => ({
-        id: c.id,
-        time: c.time.toISOString(),
-        open: c.open,
-        high: c.high,
-        low: c.low,
-        close: c.close
+    // Tutti i giorni selezionati sono generati separatamente.
+    const daysToGenerate = selectedDayKeys.length ? [...selectedDayKeys].sort() : [...allCsvDays];
+    const pools = daysToGenerate.map(day => ({
+      day,
+      candles: validTimePool(day).map(c => ({
+        id: c.id, time: c.time.toISOString(), open: c.open,
+        high: c.high, low: c.low, close: c.close
       }))
-    }].filter(group => group.candles.length >= 5);
-
-    if (!pools.length) {
-      return alert("Non ci sono abbastanza candele nell'ultimo giorno del CSV e negli orari selezionati.");
+    }));
+    const missingDays = pools.filter(group => group.candles.length < 5);
+    if (missingDays.length) {
+      return alert("Candele insufficienti nei giorni: " + missingDays.map(g => g.day).join(", "));
     }
+    if (!pools.length) return alert("Nessun giorno selezionato.");
 
     let previousDayPool = null;
     if (includePreviousDayTrade) {
