@@ -4,7 +4,6 @@ export const runtime = "nodejs";
 export const maxDuration = 30;
 
 const MAX_SCREEN_ATTEMPTS = 180;
-const GENERATION_BUDGET_MS = 22000;
 const MAX_TRADE_ATTEMPTS = 520;
 
 // Evita operazioni troppo ravvicinate tra loro.
@@ -89,7 +88,6 @@ function interiorPrice(candle, bounds = null) {
 
 
 function stopLossHit(candle, side, stopLoss) {
-  if (stopLoss === null || stopLoss === undefined || stopLoss === "") return false;
   const sl = Number(stopLoss);
   if (!Number.isFinite(sl)) return false;
   const high = Number(candle?.high);
@@ -99,7 +97,6 @@ function stopLossHit(candle, side, stopLoss) {
 }
 
 function stopLossExitPrice(candle, side, stopLoss) {
-  if (stopLoss === null || stopLoss === undefined || stopLoss === "") return null;
   const sl = Number(stopLoss);
   if (!Number.isFinite(sl)) return null;
   // Se la candela ha attraversato lo SL, la chiusura viene registrata allo SL.
@@ -451,29 +448,21 @@ export async function POST(request) {
     );
 
     const sets = [];
-    const deadline = Date.now() + GENERATION_BUDGET_MS;
-    let timeBudgetReached = false;
 
     for (let screenIndex = 0; screenIndex < screenCount; screenIndex += 1) {
       let best = null;
-      let bestScore = Infinity;
-      let bestDailyResults = [];
 
       for (let attempt = 0; attempt < MAX_SCREEN_ATTEMPTS; attempt += 1) {
-        if (Date.now() >= deadline) { timeBudgetReached = true; break; }
         const trades = [];
         const attemptUsed = new Set(confirmedUsed);
         const attemptTimes = new Set();
         let scenarioCursor = 0;
-        const dailyResults = [];
-        let deviationScore = 0;
 
         const requiredPerDay = autoPositive + autoNegative;
         const validGroups = pools.filter(group => Array.isArray(group?.candles) && group.candles.length);
         let attemptValid = validGroups.length > 0;
 
         for (const group of validGroups) {
-          if (Date.now() >= deadline) { timeBudgetReached = true; attemptValid = false; break; }
           const pool = group.candles
             .filter(c => c?.id && c?.time)
             .sort((a, b) => new Date(a.time) - new Date(b.time));
@@ -541,17 +530,6 @@ export async function POST(request) {
             break;
           }
 
-          // Il profitto min/max si applica a CIASCUN giorno, non alla settimana.
-          const dayProfit = Number(dayTrades.reduce(
-            (sum, trade) => sum + Number(trade.profit || 0), 0
-          ).toFixed(2));
-          const deviation = dayProfit < profitMin ? profitMin - dayProfit
-            : dayProfit > profitMax ? dayProfit - profitMax : 0;
-          deviationScore += deviation;
-          dailyResults.push({ day: group.day, profit: dayProfit,
-            withinRange: deviation === 0, deviation: Number(deviation.toFixed(2)),
-            positive: dayPositive, negative: dayNegative });
-
           trades.push(...dayTrades);
         }
 
@@ -569,10 +547,6 @@ export async function POST(request) {
           continue;
         }
 
-        // Se esiste una soluzione migliore, conserviamola. Il numero di operazioni
-        // positive/negative rimane obbligatorio anche fuori dal range di profitto.
-        if (deviationScore >= bestScore) continue;
-
         // Opzionale: aggiunge UNA sola operazione del giorno precedente.
         // Non modifica il conteggio richiesto di positive/negative dell'ultimo giorno.
         if (includePreviousDayTrade) {
@@ -585,7 +559,7 @@ export async function POST(request) {
             operationPreference,
             reserved: attemptUsed,
             reservedTimes: attemptTimes,
-            confirmedMarketValues: new Set(confirmedMarketValues),
+            confirmedMarketValues,
             lotMin,
             lotMax,
             pointValue
@@ -599,51 +573,45 @@ export async function POST(request) {
           (a, b) => new Date(a.closeTime).getTime() - new Date(b.closeTime).getTime()
         );
 
-        best = trades;
-        bestScore = deviationScore;
-        bestDailyResults = dailyResults;
-        if (bestScore === 0) break;
+        const normalDayTrades = includePreviousDayTrade
+          ? trades.filter(t => !t.carriedFromPreviousDay)
+          : trades;
+        const totalForGeneration = normalDayTrades.reduce((sum, trade) => sum + Number(trade.profit || 0), 0);
+
+        if (totalForGeneration >= profitMin && totalForGeneration <= profitMax) {
+          best = trades;
+          for (const key of attemptUsed) confirmedUsed.add(key);
+
+          // Salva complessivamente entrate + uscite per giorno.
+          for (const trade of trades) {
+            const group = validGroups.find(g =>
+              Array.isArray(g?.candles) &&
+              g.candles.some(c => c?.id === trade.openCandleId)
+            );
+            if (!group?.day) continue;
+            confirmedMarketValues.add(`${group.day}|${marketValueKey(trade.entry)}`);
+            confirmedMarketValues.add(`${group.day}|${marketValueKey(trade.exit)}`);
+          }
+
+          break;
+        }
       }
 
       if (best) {
-        for (const trade of best) {
-          const open = new Date(trade.openTime).getTime();
-          const close = new Date(trade.closeTime).getTime();
-          // Conserva le candele e i valori di mercato soltanto per la soluzione scelta.
-          const matching = [...pools, previousDayPool].filter(Boolean).flatMap(g =>
-            (g.candles || []).map(c => ({ c, day: g.day })));
-          for (const item of matching) {
-            if (item.c.id === trade.openCandleId || item.c.id === trade.closeCandleId) {
-              confirmedUsed.add(signature(item.c));
-            }
-          }
-          const openDay = matching.find(x => x.c.id === trade.openCandleId)?.day;
-          const closeDay = matching.find(x => x.c.id === trade.closeCandleId)?.day;
-          if (openDay) confirmedMarketValues.add(`${openDay}|${marketValueKey(trade.entry)}`);
-          if (closeDay) confirmedMarketValues.add(`${closeDay}|${marketValueKey(trade.exit)}`);
-        }
         sets.push({
           name: `screen_${String(screenIndex + 1).padStart(2, "0")}`,
-          trades: best,
-          dailyResults: bestDailyResults,
-          profitRangeFullyMet: bestScore === 0
+          trades: best
         });
       }
-      if (timeBudgetReached) break;
     }
 
     return NextResponse.json({
       sets,
-      timeBudgetReached,
       usedCandleKeys: Array.from(confirmedUsed),
       usedMarketValueKeys: Array.from(confirmedMarketValues),
       partial: sets.length < screenCount,
-      message: timeBudgetReached && !sets.length
-        ? "Tempo massimo raggiunto. Nessuna combinazione completa trovata: riduci gli screen o amplia i vincoli."
-        : sets.length
-        ? (sets.some(s => !s.profitRangeFullyMet)
-          ? "Alcune giornate non hanno raggiunto il profitto richiesto: consulta dailyResults."
-          : null)
+      message: sets.length
+        ? null
         : `Nessuna combinazione completa trovata. Il generatore accetta solo screen con ESATTAMENTE ${autoPositive} positive e ${autoNegative} negative per giorno, con almeno ${MIN_OPERATION_GAP_MINUTES} minuti di distanza. Se non riesce, non restituisce risultati parziali.`
     });
   } catch (error) {
