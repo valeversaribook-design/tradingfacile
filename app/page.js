@@ -1344,7 +1344,15 @@ export default function LucaTradingAuto() {
         })
       });
 
-      const result = await response.json();
+      const rawResponse = await response.text();
+      let result;
+      try { result = JSON.parse(rawResponse); }
+      catch {
+        const preview = rawResponse.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().slice(0, 220);
+        throw new Error(`Risposta server non valida (HTTP ${response.status}). ` +
+          ([502,503,504].includes(response.status) ? "Possibile timeout durante la generazione. " : "") +
+          (preview || "Risposta vuota."));
+      }
 
       if (!response.ok) {
         throw new Error(result?.error || "Errore durante la generazione.");
