@@ -1,15 +1,133 @@
-import { NextResponse } from "next/server";
+"use client";
 
-export const runtime = "nodejs";
-export const maxDuration = 30;
+import { useEffect, useMemo, useState } from "react";
+import Papa from "papaparse";
+import JSZip from "jszip";
+import "./style.css";
 
-const MAX_SCREEN_ATTEMPTS = 180;
-const MAX_TRADE_ATTEMPTS = 520;
+const TZ = "Europe/Rome";
 
-// Evita operazioni troppo ravvicinate tra loro.
-// Il controllo viene fatto sugli orari di apertura e chiusura delle operazioni generate.
-const MIN_OPERATION_GAP_MINUTES = 3;
-const MIN_OPERATION_GAP_MS = MIN_OPERATION_GAP_MINUTES * 60 * 1000;
+function toNum(v) {
+  const s = String(v ?? "").trim().replace(/\s/g, "");
+  if (s === "") return NaN;
+  if (s.includes(",") && s.includes(".")) return Number(s.replace(/\./g, "").replace(",", "."));
+  if (s.includes(",")) return Number(s.replace(",", "."));
+  return Number(s);
+}
+
+function findHeader(row, names) {
+  const map = {};
+  Object.keys(row).forEach(k => {
+    map[k.toLowerCase().trim().replace("\ufeff", "")] = k;
+  });
+  for (const name of names) if (map[name]) return map[name];
+  return null;
+}
+
+function parseDate(v) {
+  const raw = String(v ?? "").trim();
+  if (!raw) return null;
+
+  // TradingView CSV: timestamp UNIX UTC, secondi o millisecondi.
+  if (/^\d{10}$/.test(raw)) return new Date(Number(raw) * 1000);
+  if (/^\d{13}$/.test(raw)) return new Date(Number(raw));
+
+  // Formato Numbers/TradingView esportato:
+  // 2026-07-02T19:57:00+02:00
+  // 2026-07-02 19:57:00+02:00
+  // 2026-07-02T19:57:00
+  const iso = raw.replace(" ", "T");
+  const d1 = new Date(iso);
+  if (!Number.isNaN(d1.getTime())) return d1;
+
+  // Formato italiano: 02/07/2026 19:57:00
+  const m = raw.match(/^(\d{2})\/(\d{2})\/(\d{4})\s+(\d{2}):(\d{2})(?::(\d{2}))?/);
+  if (m) {
+    const d2 = new Date(`${m[3]}-${m[2]}-${m[1]}T${m[4]}:${m[5]}:${m[6] || "00"}`);
+    if (!Number.isNaN(d2.getTime())) return d2;
+  }
+
+  return null;
+}
+
+function partsIT(d) {
+  return new Intl.DateTimeFormat("it-IT", {
+    timeZone: TZ,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  }).formatToParts(d).reduce((a, x) => {
+    a[x.type] = x.value;
+    return a;
+  }, {});
+}
+
+function dayKey(d) {
+  const p = partsIT(d);
+  return `${p.year}-${p.month}-${p.day}`;
+}
+
+function dayLabel(d) {
+  return new Intl.DateTimeFormat("it-IT", {
+    timeZone: TZ,
+    weekday: "short",
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric"
+  }).format(d);
+}
+
+function itDate(d, seconds = true) {
+  if (!d) return "-";
+  const p = partsIT(d);
+  return `${p.day}/${p.month}/${p.year} ${p.hour}:${p.minute}${seconds ? ":" + p.second : ""}`;
+}
+
+function reportDate(d) {
+  const p = partsIT(d);
+  return `${p.year}.${p.month}.${p.day} ${p.hour}:${p.minute}:${p.second}`;
+}
+
+function htmlDate(d) {
+  const p = partsIT(d);
+  return `${p.year}-${p.month}-${p.day}`;
+}
+
+function htmlTime(d) {
+  const p = partsIT(d);
+  return `${p.hour}:${p.minute}:${p.second}`;
+}
+
+function dateFromInputs(dateStr, timeStr) {
+  const safeDate = dateStr || "2026-01-01";
+  const safeTime = (timeStr || "00:00:00").length === 5 ? `${timeStr}:00` : (timeStr || "00:00:00");
+  const [y, m, d] = safeDate.split("-").map(Number);
+  const [hh, mm, ss] = safeTime.split(":").map(Number);
+
+  // Crea una data locale browser. Per il report conta il testo mostrato e la coerenza interna.
+  return new Date(y, (m || 1) - 1, d || 1, hh || 0, mm || 0, ss || 0);
+}
+
+function money(v) {
+  return Number(v || 0).toLocaleString("it-IT", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  }).replace(/\./g, " ");
+}
+
+function price(v) {
+  return Number(v || 0).toFixed(2);
+}
+
+function pnl(side, entry, exit, lot, pointValue) {
+  return side === "buy"
+    ? (Number(exit) - Number(entry)) * Number(lot) * Number(pointValue)
+    : (Number(entry) - Number(exit)) * Number(lot) * Number(pointValue);
+}
 
 function rand(min, max) {
   return Number(min) + Math.random() * (Number(max) - Number(min));
@@ -19,612 +137,1532 @@ function randInt(min, max) {
   return Math.floor(rand(min, max + 1));
 }
 
-function choose(items) {
-  return items[randInt(0, items.length - 1)];
+function choose(arr) {
+  return arr[randInt(0, arr.length - 1)];
 }
 
-function signature(candle) {
+function ohlcValues(c) {
   return [
-    new Date(candle.time).getTime(),
-    Number(candle.open).toFixed(5),
-    Number(candle.high).toFixed(5),
-    Number(candle.low).toFixed(5),
-    Number(candle.close).toFixed(5)
+    { label: "open", value: c.open },
+    { label: "high", value: c.high },
+    { label: "low", value: c.low },
+    { label: "close", value: c.close }
+  ];
+}
+
+function nearestOHLC(c, target) {
+  const values = ohlcValues(c);
+  if (target === null || Number.isNaN(target)) return choose(values);
+  return values.reduce((best, item) =>
+    Math.abs(item.value - target) < Math.abs(best.value - target) ? item : best
+  , values[0]);
+}
+
+function pickCandleNear(pool, target, startIndex = 0, endIndex = pool.length - 1) {
+  const from = Math.max(0, startIndex);
+  const to = Math.min(pool.length - 1, endIndex);
+  let best = null;
+
+  for (let i = from; i <= to; i++) {
+    const c = pool[i];
+    const nearest = nearestOHLC(c, target);
+    const distance = target === null || Number.isNaN(target) ? Math.random() : Math.abs(nearest.value - target);
+
+    if (!best || distance < best.distance) {
+      best = { index: i, candle: c, value: nearest.value, source: nearest.label, distance };
+    }
+  }
+
+  return best;
+}
+
+function withRandomSecond(d) {
+  const x = new Date(d);
+  x.setSeconds(randInt(0, 59));
+  return x;
+}
+
+function roundRect(ctx, x, y, w, h, r, fill, stroke) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+  if (fill) ctx.fill();
+  if (stroke) ctx.stroke();
+}
+
+function downloadBlob(blob, filename) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function formatCandle(c) {
+  return `${itDate(c.time, false)} | O ${price(c.open)} H ${price(c.high)} L ${price(c.low)} C ${price(c.close)}`;
+}
+
+function candleSignature(c) {
+  if (!c?.time) return "";
+  return [
+    new Date(c.time).getTime(),
+    Number(c.open).toFixed(5),
+    Number(c.high).toFixed(5),
+    Number(c.low).toFixed(5),
+    Number(c.close).toFixed(5)
   ].join("|");
 }
 
-function pnl(side, entry, exit, lot, pointValue) {
-  return side === "buy"
-    ? (exit - entry) * lot * pointValue
-    : (entry - exit) * lot * pointValue;
+function todayRomeKey() {
+  return dayKey(new Date());
 }
 
-function withRandomSecond(value) {
-  const date = new Date(value);
-  date.setSeconds(randInt(4, 55));
-  return date.toISOString();
+function usedCandlesStorageKey() {
+  return `luca-trading-used-candles:${todayRomeKey()}`;
 }
 
-function scenarioBounds(scenario) {
-  const a = Number(scenario?.open);
-  const b = Number(scenario?.close);
+function readUsedCandlesToday() {
+  if (typeof window === "undefined") return new Set();
 
-  if (!Number.isFinite(a) || !Number.isFinite(b) || a === b) return null;
-
-  return {
-    min: Math.min(a, b),
-    max: Math.max(a, b)
-  };
+  try {
+    const raw = window.localStorage.getItem(usedCandlesStorageKey());
+    const values = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(values) ? values : []);
+  } catch {
+    return new Set();
+  }
 }
 
-// Prende SEMPRE un valore interno al corpo della candela (tra open e close),
-// mai open/close esatti e mai high/low. Se c'è uno scenario, il valore deve
-// anche restare dentro l'intervallo indicato dallo scenario.
-function interiorPrice(candle, bounds = null) {
-  const open = Number(candle.open);
-  const close = Number(candle.close);
-  if (!Number.isFinite(open) || !Number.isFinite(close) || open === close) return null;
+function saveUsedCandlesToday(usedSet) {
+  if (typeof window === "undefined") return;
 
-  let low = Math.min(open, close);
-  let high = Math.max(open, close);
+  try {
+    window.localStorage.setItem(
+      usedCandlesStorageKey(),
+      JSON.stringify(Array.from(usedSet))
+    );
+  } catch {
+    // Se localStorage non è disponibile, l'app continua a funzionare nella sessione.
+  }
+}
 
-  if (bounds) {
-    low = Math.max(low, bounds.min);
-    high = Math.min(high, bounds.max);
+function usedMarketValuesStorageKey() {
+  return "luca-trading-used-market-values:v1";
+}
+
+function dayMarketValueKey(day, value) {
+  return `${day}|${Number(value).toFixed(2)}`;
+}
+
+function readUsedMarketValues() {
+  if (typeof window === "undefined") return new Set();
+  try {
+    const raw = window.localStorage.getItem(usedMarketValuesStorageKey());
+    const values = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(values) ? values : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveUsedMarketValues(usedSet) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(
+      usedMarketValuesStorageKey(),
+      JSON.stringify(Array.from(usedSet))
+    );
+  } catch {
+    // L'app continua a funzionare anche se localStorage non è disponibile.
+  }
+}
+
+
+
+
+const SIGNAL_RULES_STORAGE_KEY = "luca-trading-signal-rules:v1";
+function readSignalRules(){if(typeof window==="undefined")return[];try{const v=JSON.parse(localStorage.getItem(SIGNAL_RULES_STORAGE_KEY)||"[]");return Array.isArray(v)?v:[]}catch{return[]}}
+function saveSignalRules(v){if(typeof window!=="undefined")try{localStorage.setItem(SIGNAL_RULES_STORAGE_KEY,JSON.stringify(v))}catch{}}
+function parseSignalText(text){
+ const s=String(text||""); const side=s.match(/\bXAUUSD\s+(BUY|SELL)\b/i); const en=s.match(/Entry\s*:\s*([0-9.,]+)\s*(?:-\s*([0-9.,]+))?/i);
+ const sl=s.match(/\bSL\s*:\s*([0-9.,]+)/i); const tps=[...s.matchAll(/\bTP\d*\s*:\s*([0-9.,]+)/gi)];
+ if(!side||!en)return null; const n=v=>Number(String(v).replace(",", ".")); const a=n(en[1]),b=en[2]?n(en[2]):a;
+ return {side:side[1].toLowerCase(),entryMin:Math.min(a,b),entryMax:Math.max(a,b),sl:sl?n(sl[1]):null,tps:tps.map(x=>n(x[1])).filter(Number.isFinite)};
+}
+
+function renderLucaLayoutBlob(trades, layout, tab, deposit, credit, withdrawal) {
+  const isAndroid = layout.startsWith("luca_android");
+  const isIOS = layout.startsWith("luca_ios");
+  const isDark = layout.endsWith("dark");
+  if (!isAndroid && !isIOS) return null;
+
+  // IMPORTANTE: separiamo i dati usati per il totale da quelli usati solo a video.
+  // Il totale usa SEMPRE tutte le operazioni del periodo e non viene mai toccato dal limite di 9.
+  const allPeriodTrades = [...trades];
+  const totalProfit = allPeriodTrades.reduce((sum, t) => sum + Number(t.profit || 0), 0);
+
+  // Solo la parte grafica viene limitata alle ultime 9 operazioni.
+  const orderedAll = [...allPeriodTrades].sort((a, b) => new Date(a.closeTime) - new Date(b.closeTime));
+  const ordered = (tab === "Day" || tab === "Week") ? orderedAll.slice(-9) : orderedAll;
+  const depositValue = Number(deposit || 0);
+  const creditValue = Number(credit || 0);
+  const withdrawalValue = Number(withdrawal || 0);
+  const balance = depositValue + creditValue - withdrawalValue + totalProfit;
+
+  const canvas = document.createElement("canvas");
+  canvas.width = 828;
+  canvas.height = 1792;
+  const ctx = canvas.getContext("2d");
+
+  const bg = isDark ? "#000000" : "#ffffff";
+  const text = isDark ? "#f4f4f4" : "#111111";
+  const muted = isDark ? "#b9b9bd" : "#5e5e63";
+  const line = isDark ? "#28282a" : "#e4e4e6";
+  const blue = "#0a84ff";
+  const red = "#ff3b30";
+  const green = "#34c759";
+  const navBg = isDark ? "#090909" : "#ffffff";
+  const pill = isDark ? "#2a2a2d" : "#ececef";
+
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  function font(size, weight = "400") {
+    ctx.font = `${weight} ${size}px -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif`;
   }
 
-  if (!(high > low)) return null;
-
-  // Margine per non finire mai sugli estremi visibili.
-  const span = high - low;
-  const margin = Math.max(span * 0.12, 0.01);
-  const innerLow = low + margin;
-  const innerHigh = high - margin;
-
-  if (!(innerHigh > innerLow)) return null;
-
-  return Number(rand(innerLow, innerHigh).toFixed(2));
-}
-
-
-function stopLossHit(candle, side, stopLoss) {
-  const sl = Number(stopLoss);
-  if (!Number.isFinite(sl)) return false;
-  const high = Number(candle?.high);
-  const low = Number(candle?.low);
-  if (!Number.isFinite(high) || !Number.isFinite(low)) return false;
-  return side === "sell" ? high >= sl : low <= sl;
-}
-
-function stopLossExitPrice(candle, side, stopLoss) {
-  const sl = Number(stopLoss);
-  if (!Number.isFinite(sl)) return null;
-  // Se la candela ha attraversato lo SL, la chiusura viene registrata allo SL.
-  // L'orario è quello della candela che lo ha raggiunto (con secondo casuale come nel resto dell'app).
-  return Number(sl.toFixed(2));
-}
-
-function isTimeFarEnough(candidateMs, usedTimes) {
-  for (const usedMs of usedTimes) {
-    if (Math.abs(candidateMs - usedMs) < MIN_OPERATION_GAP_MS) return false;
+  function txt(value, x, y, size = 24, weight = "400", color = text, align = "left") {
+    font(size, weight);
+    ctx.fillStyle = color;
+    ctx.textAlign = align;
+    ctx.textBaseline = "alphabetic";
+    ctx.fillText(String(value), x, y);
+    ctx.textAlign = "left";
   }
-  return true;
-}
 
-function marketValueKey(value) {
-  return Number(value).toFixed(2);
-}
+  function hline(y, x1 = 0, x2 = 828, width = 1) {
+    ctx.strokeStyle = line;
+    ctx.lineWidth = width;
+    ctx.beginPath();
+    ctx.moveTo(x1, y);
+    ctx.lineTo(x2, y);
+    ctx.stroke();
+  }
 
-
-function signalRulesForTime(rules, timeMs, operationPreference = "auto") {
-  return (Array.isArray(rules) ? rules : [])
-    .filter(rule => {
-      const start = new Date(rule?.start).getTime();
-      const end = rule?.end ? new Date(rule.end).getTime() : Infinity;
-      if (!Number.isFinite(start) || timeMs < start || timeMs > end) return false;
-      const side = String(rule?.side || "").toLowerCase();
-      if (operationPreference === "buy" && side !== "buy") return false;
-      if (operationPreference === "sell" && side !== "sell") return false;
-      return side === "buy" || side === "sell";
-    })
-    .sort(() => Math.random() - 0.5);
-}
-function signalExitBounds(r){
- if(!r)return null; const vals=[Number(r.entryMin),Number(r.entryMax),Number(r.sl),...(Array.isArray(r.tps)?r.tps.map(Number):[])].filter(Number.isFinite);
- return vals.length?{min:Math.min(...vals),max:Math.max(...vals)}:null;
-}
-
-function buildTrade({
-  wantPositive,
-  pool,
-  scenario,
-  signalRules,
-  sourceMode = "auto",
-  operationPreference = "auto",
-  reserved,
-  reservedTimes,
-  reservedMarketValues,
-  lotMin,
-  lotMax,
-  pointValue
-}) {
-  const available = pool.filter(candle => !reserved.has(signature(candle)));
-  if (available.length < 2) return null;
-
-  const bounds = scenarioBounds(scenario);
-
-  for (let attempt = 0; attempt < MAX_TRADE_ATTEMPTS; attempt += 1) {
-    // Scegliamo una candela di apertura casuale, non "la più vicina" al numero
-    // dello scenario: lo scenario è solo il recinto entro cui devono stare i prezzi.
-    const openIndex = randInt(0, available.length - 2);
-    const openCandle = available[openIndex];
-    const openMs = new Date(openCandle.time).getTime();
-
-    if (!Number.isFinite(openMs) || !isTimeFarEnough(openMs, reservedTimes)) continue;
-
-    const validSignals = signalRulesForTime(signalRules, openMs, operationPreference);
-    const signalCandidates = validSignals.map(signal => {
-      const entry = interiorPrice(openCandle, { min: Number(signal.entryMin), max: Number(signal.entryMax) });
-      return entry === null ? null : { signal, entry };
-    }).filter(Boolean);
-
-    let activeSignal = null;
-    let entry = null;
-    if (sourceMode === "signals") {
-      if (!signalCandidates.length) continue;
-      const pickedSignal = choose(signalCandidates);
-      activeSignal = pickedSignal.signal;
-      entry = pickedSignal.entry;
-    } else if (sourceMode === "scenario") {
-      entry = interiorPrice(openCandle, bounds);
-    } else {
-      entry = interiorPrice(openCandle, null);
+  function rr(x, y, w, h, r, fill, stroke = null, strokeWidth = 1) {
+    roundRect(ctx, x, y, w, h, r, false, false);
+    if (fill) {
+      ctx.fillStyle = fill;
+      ctx.fill();
     }
-    if (entry === null) continue;
-    if (reservedMarketValues.has(marketValueKey(entry))) continue;
+    if (stroke) {
+      ctx.strokeStyle = stroke;
+      ctx.lineWidth = strokeWidth;
+      ctx.stroke();
+    }
+  }
 
-    // La chiusura viene cercata in ordine cronologico.
-    // Se prima della chiusura il prezzo raggiunge lo SL del segnale, l'operazione
-    // viene chiusa obbligatoriamente in quella candela allo Stop Loss.
-    const laterCandidates = [];
-    let forcedStop = null;
-    const sideForStop = operationPreference === "buy" || operationPreference === "sell"
-      ? operationPreference
-      : (activeSignal?.side ? String(activeSignal.side).toLowerCase() : null);
+  function dot(x, y, r, fill) {
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fillStyle = fill;
+    ctx.fill();
+  }
 
-    for (let i = openIndex + 1; i < available.length; i += 1) {
-      const candle = available[i];
-      const closeMs = new Date(candle.time).getTime();
-      if (!Number.isFinite(closeMs)) continue;
-      if (closeMs - openMs < MIN_OPERATION_GAP_MS) continue;
-      if (!isTimeFarEnough(closeMs, reservedTimes)) continue;
+  function drawSignal(x, y, color) {
+    ctx.fillStyle = color;
+    const heights = [8, 13, 18, 24];
+    heights.forEach((h, i) => ctx.fillRect(x + i * 9, y - h, 6, h));
+  }
 
-      if (activeSignal && sideForStop && stopLossHit(candle, sideForStop, activeSignal.sl)) {
-        const stopExit = stopLossExitPrice(candle, sideForStop, activeSignal.sl);
-        if (stopExit !== null && !reservedMarketValues.has(marketValueKey(stopExit))) {
-          forcedStop = { candle, closeMs, exit: stopExit, stoppedOut: true };
-        }
-        break; // Dopo lo SL non è consentita alcuna chiusura successiva.
+  function drawWifi(x, y, color) {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 4;
+    ctx.lineCap = "round";
+    [24, 16, 8].forEach((r, i) => {
+      ctx.beginPath();
+      ctx.arc(x, y, r, Math.PI * 1.12, Math.PI * 1.88);
+      ctx.stroke();
+    });
+    dot(x, y + 2, 3, color);
+  }
+
+  function drawBattery(x, y, pct = "75") {
+    const w = 55, h = 26;
+    rr(x, y, w, h, 7, isIOS ? green : null, isIOS ? null : muted, 2);
+    if (!isIOS) {
+      rr(x + 4, y + 4, w * 0.72, h - 8, 3, muted);
+    }
+    ctx.fillStyle = muted;
+    ctx.fillRect(x + w + 3, y + 8, 4, 10);
+    if (isIOS) txt(pct, x + w / 2, y + 20, 19, "700", "#ffffff", "center");
+  }
+
+  function drawGear(cx, cy, color) {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.arc(cx, cy, 13, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(cx, cy, 4, 0, Math.PI * 2);
+    ctx.stroke();
+    for (let i = 0; i < 8; i++) {
+      const a = i * Math.PI / 4;
+      ctx.beginPath();
+      ctx.moveTo(cx + Math.cos(a) * 15, cy + Math.sin(a) * 15);
+      ctx.lineTo(cx + Math.cos(a) * 21, cy + Math.sin(a) * 21);
+      ctx.stroke();
+    }
+  }
+
+  function drawCandles(cx, cy, color) {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 3;
+    [[-13, -18, 8, 25], [0, -8, 8, 22], [13, -20, 8, 28]].forEach(([dx, dy, w, h]) => {
+      ctx.beginPath();
+      ctx.moveTo(cx + dx + w / 2, cy + dy - 7);
+      ctx.lineTo(cx + dx + w / 2, cy + dy + h + 7);
+      ctx.stroke();
+      ctx.strokeRect(cx + dx, cy + dy, w, h);
+    });
+  }
+
+  function drawTradeIcon(cx, cy, color) {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 4;
+    ctx.lineJoin = "round";
+    ctx.beginPath();
+    ctx.moveTo(cx - 19, cy + 12);
+    ctx.lineTo(cx - 6, cy - 2);
+    ctx.lineTo(cx + 3, cy + 5);
+    ctx.lineTo(cx + 20, cy - 17);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(cx + 10, cy - 17);
+    ctx.lineTo(cx + 20, cy - 17);
+    ctx.lineTo(cx + 20, cy - 7);
+    ctx.stroke();
+  }
+
+  function drawHistoryIcon(cx, cy, color) {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 4;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.arc(cx, cy, 18, -Math.PI * 0.15, Math.PI * 1.55);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(cx - 18, cy - 9);
+    ctx.lineTo(cx - 25, cy - 10);
+    ctx.lineTo(cx - 21, cy - 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx, cy - 11);
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + 9, cy + 5);
+    ctx.stroke();
+  }
+
+  function drawQuotesIcon(cx, cy, color) {
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(cx - 9, cy + 14);
+    ctx.lineTo(cx - 9, cy - 14);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(cx - 15, cy - 7);
+    ctx.lineTo(cx - 9, cy - 14);
+    ctx.lineTo(cx - 3, cy - 7);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(cx + 9, cy - 14);
+    ctx.lineTo(cx + 9, cy + 14);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(cx + 3, cy + 7);
+    ctx.lineTo(cx + 9, cy + 14);
+    ctx.lineTo(cx + 15, cy + 7);
+    ctx.stroke();
+  }
+
+  function drawAndroidSystemBar() {
+    const y = 1727;
+    ctx.fillStyle = "#000000";
+    ctx.fillRect(0, y, 828, 65);
+    ctx.strokeStyle = "#bcbcbc";
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(165, 1759); ctx.lineTo(187, 1746); ctx.lineTo(187, 1772); ctx.closePath(); ctx.stroke();
+    ctx.beginPath(); ctx.arc(414, 1759, 12, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeRect(648, 1748, 23, 23);
+  }
+
+  function fmtPrice(v) {
+    return Number(v).toFixed(2);
+  }
+
+  // =========================
+  // LUCA ANDROID
+  // =========================
+  if (isAndroid) {
+    // Status bar, proporzioni del riferimento Android allegato.
+    txt("11:11", 18, 34, 22, "700", text);
+    drawSignal(704, 31, text);
+    txt("4G", 751, 34, 18, "700", text);
+    drawBattery(783, 12, "75");
+
+    // Header "Storico / Tutti i simboli"
+    txt("☰", 20, 83, 27, "600", muted);
+    txt("Storico", 59, 65, 27, "700", text);
+    txt("Tutti i simboli", 59, 96, 20, "400", muted);
+    txt("$", 704, 77, 20, "700", muted);
+    txt("↕", 756, 78, 25, "500", muted);
+    txt("▦", 807, 78, 23, "500", muted, "right");
+    hline(115);
+
+    // Profitto/Bilancio in alto, con puntinatura.
+    const sumRows = [
+      ["Profitto:", totalProfit, true],
+      ["Bilancio:", balance, false]
+    ];
+    sumRows.forEach((row, i) => {
+      const y = 146 + i * 35;
+      txt(row[0], 23, y, 26, "700", text);
+      ctx.strokeStyle = isDark ? "#444448" : "#c8c8ca";
+      ctx.lineWidth = 2;
+      ctx.setLineDash([2, 7]);
+      ctx.beginPath();
+      ctx.moveTo(150, y - 8);
+      ctx.lineTo(690, y - 8);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      txt(money(row[1]), 805, y, 27, "700", row[2] ? blue : text, "right");
+    });
+    hline(204);
+
+    const startY = 205;
+    const rowH = 93;
+    const navTop = 1572;
+    const maxRows = Math.min(ordered.length, Math.floor((navTop - startY) / rowH));
+
+    ordered.slice(0, maxRows).forEach((t, i) => {
+      const y = startY + i * rowH;
+      const sideColor = t.side === "buy" ? blue : red;
+      const profitColor = Number(t.profit) >= 0 ? blue : red;
+
+      // sottile barra laterale colorata come nei riferimenti Android.
+      ctx.fillStyle = Number(t.profit) >= 0 ? "#8bc34a" : red;
+      ctx.fillRect(0, y + 1, 5, rowH - 2);
+
+      txt("XAUUSD,", 20, y + 39, 25, "700", text);
+      font(25, "700");
+      const symbolW = ctx.measureText("XAUUSD,").width;
+      txt(`${t.side} ${Number(t.lot).toFixed(2)}`, 20 + symbolW + 7, y + 39, 25, "700", sideColor);
+      txt(reportDate(t.closeTime), 807, y + 37, 20, "700", muted, "right");
+      txt(`${fmtPrice(t.entry)} → ${fmtPrice(t.exit)}`, 20, y + 70, 24, "400", muted);
+      txt(money(t.profit), 807, y + 70, 24, "700", profitColor, "right");
+      hline(y + rowH);
+    });
+
+    // Barra app Android: 5 voci, Storico selezionato.
+    ctx.fillStyle = navBg;
+    ctx.fillRect(0, navTop, 828, 155);
+    hline(navTop);
+    const navItems = [
+      ["quotes", "Quotazioni"],
+      ["candles", "Grafico"],
+      ["trade", "Operazioni"],
+      ["history", "Storico"],
+      ["gear", "Impostazioni"]
+    ];
+    navItems.forEach((item, i) => {
+      const x = 76 + i * 169;
+      const selected = i === 3;
+      const c = selected ? blue : muted;
+      if (selected) rr(x - 53, navTop + 16, 106, 72, 18, isDark ? "#20242b" : "#dce8ff");
+      if (item[0] === "quotes") drawQuotesIcon(x, navTop + 48, c);
+      if (item[0] === "candles") drawCandles(x, navTop + 48, c);
+      if (item[0] === "trade") drawTradeIcon(x, navTop + 48, c);
+      if (item[0] === "history") drawHistoryIcon(x, navTop + 48, c);
+      if (item[0] === "gear") drawGear(x, navTop + 48, c);
+      txt(item[1], x, navTop + 120, 17, "700", c, "center");
+    });
+    drawAndroidSystemBar();
+  }
+
+  // =========================
+  // LUCA iOS
+  // =========================
+  if (isIOS) {
+    // Status bar identica geometria al riferimento iOS bianco.
+    txt("17:48", 84, 72, 34, "700", text);
+    // icona silenzioso semplificata ma nella stessa posizione.
+    txt("◕", 196, 71, 27, "700", text);
+    drawSignal(598, 69, text);
+    drawWifi(671, 65, text);
+    drawBattery(707, 48, "75");
+
+    // Pulsante sinistro circolare.
+    rr(34, 124, 94, 94, 47, isDark ? "#171719" : "#ffffff", isDark ? "#202023" : "#f6f6f7", 1);
+    txt("↕", 81, 187, 38, "700", text, "center");
+    txt("≡", 99, 187, 30, "700", text, "center");
+
+    // Segmented control centrale.
+    rr(165, 123, 503, 97, 49, isDark ? "#171719" : "#ffffff", isDark ? "#202023" : "#f5f5f6", 1);
+    rr(176, 132, 149, 79, 39, pill);
+    txt("Posizioni", 250, 183, 29, "500", text, "center");
+    txt("Ordini", 414, 183, 29, "400", text, "center");
+    txt("Affari", 578, 183, 29, "400", text, "center");
+
+    // Pulsante orologio destro.
+    rr(704, 124, 94, 94, 47, isDark ? "#171719" : "#ffffff", isDark ? "#202023" : "#f6f6f7", 1);
+    ctx.strokeStyle = text;
+    ctx.lineWidth = 5;
+    ctx.beginPath(); ctx.arc(751, 171, 22, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(751, 171); ctx.lineTo(751, 155); ctx.moveTo(751, 171); ctx.lineTo(762, 179); ctx.stroke();
+
+    // Balance + timestamp superiore, presente nel riferimento.
+    txt("Balance", 13, 289, 31, "500", text);
+    const headerBalance = depositValue || balance;
+    txt(money(headerBalance), 817, 289, 34, "700", blue, "right");
+    const headerTime = ordered.length ? reportDate(ordered[0].openTime || ordered[0].closeTime) : reportDate(new Date());
+    txt(headerTime, 817, 337, 27, "400", muted, "right");
+
+    // Operazioni: nessuna linea orizzontale; aria e proporzioni come screenshot.
+    const startY = 369;
+    // Con 9 operazioni dobbiamo riservare uno spazio fisso al riepilogo:
+    // le righe sono leggermente più compatte per evitare qualsiasi sovrapposizione.
+    const rowH = 105;
+    const navTop = 1627;
+    const summaryBottom = navTop - 38;
+    const visible = ordered;
+
+    visible.forEach((t, i) => {
+      const y = startY + i * rowH;
+      const sideColor = t.side === "buy" ? blue : red;
+      const profitColor = Number(t.profit) >= 0 ? blue : red;
+
+      if (Number(t.profit) < 0) {
+        ctx.fillStyle = "#ef6359";
+        ctx.fillRect(0, y + 4, 6, rowH - 8);
       }
 
-      const exit = interiorPrice(candle, activeSignal ? signalExitBounds(activeSignal) : bounds);
-      if (exit === null) continue;
-      if (marketValueKey(exit) === marketValueKey(entry)) continue;
-      if (reservedMarketValues.has(marketValueKey(exit))) continue;
-      laterCandidates.push({ candle, closeMs, exit, stoppedOut: false });
+      txt("XAUUSD", 13, y + 35, 28, "700", text);
+      font(28, "700");
+      const symbolW = ctx.measureText("XAUUSD").width;
+      txt(`${t.side} ${Number(t.lot).toFixed(2)}`, 13 + symbolW + 8, y + 35, 28, "700", sideColor);
+      txt(money(t.profit), 817, y + 35, 30, "700", profitColor, "right");
+      txt(`${fmtPrice(t.entry)} → ${fmtPrice(t.exit)}`, 13, y + 78, 27, "400", muted);
+      txt(reportDate(t.closeTime), 817, y + 78, 26, "400", muted, "right");
+    });
+
+    // Riepilogo sempre DOPO l'ultima operazione. Non viene più spinto verso l'alto:
+    // è l'altezza delle righe a garantire lo spazio necessario.
+    const summaryY = startY + visible.length * rowH + 28;
+    const summaryRows = [
+      ["Deposito", depositValue],
+      ["Profitto", totalProfit],
+      ["Swap", 0],
+      ["Commissione", 0],
+      ["Bilancio", balance]
+    ];
+    summaryRows.forEach((row, i) => {
+      const y = summaryY + i * 49;
+      txt(row[0], 13, y, 29, i === 4 ? "500" : "400", text);
+      txt(money(row[1]), 817, y, 29, i === 4 ? "500" : "400", text, "right");
+    });
+
+    // Bottom iOS flottante, arrotondata come il riferimento.
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, navTop - 22, 828, 187);
+    rr(44, navTop, 744, 132, 66, isDark ? "#0c0c0d" : "#ffffff", isDark ? "#111113" : "#f4f4f5", 1);
+    const items = [
+      ["quotes", "Quotazioni"],
+      ["candles", "Chart"],
+      ["trade", "Trade"],
+      ["history", "Storico"],
+      ["gear", "Impostazioni"]
+    ];
+    items.forEach((item, i) => {
+      const x = 132 + i * 137;
+      const selected = i === 3;
+      const c = selected ? blue : text;
+      if (selected) rr(x - 62, navTop + 9, 124, 112, 56, pill);
+      if (item[0] === "quotes") drawQuotesIcon(x, navTop + 48, c);
+      if (item[0] === "candles") drawCandles(x, navTop + 48, c);
+      if (item[0] === "trade") drawTradeIcon(x, navTop + 48, c);
+      if (item[0] === "history") drawHistoryIcon(x, navTop + 48, c);
+      if (item[0] === "gear") drawGear(x, navTop + 48, c);
+      txt(item[1], x, navTop + 103, 20, selected ? "500" : "400", c, "center");
+    });
+
+    // Home indicator.
+    rr(281, 1766, 266, 7, 4, isDark ? "#ffffff" : "#000000");
+  }
+
+  return new Promise(resolve => canvas.toBlob(resolve, "image/png"));
+}
+
+function renderReportBlob(trades, layout, tab, deposit, credit, withdrawal) {
+  if (layout.startsWith("luca_android") || layout.startsWith("luca_ios")) {
+    return renderLucaLayoutBlob(trades, layout, tab, deposit, credit, withdrawal);
+  }
+
+  const totalProfit = trades.reduce((a, t) => a + Number(t.profit || 0), 0);
+  const balance = Number(deposit || 0) + Number(credit || 0) - Number(withdrawal || 0) + totalProfit;
+
+  // Giorno e Settimana: nello screen mostriamo SOLO le ultime 9 operazioni
+  // (ordinate cronologicamente), ma Profitto/Saldo restano calcolati su TUTTE.
+  const orderedAllForScreen = [...trades].sort((a, b) => new Date(a.closeTime) - new Date(b.closeTime));
+  const visibleTrades = (tab === "Day" || tab === "Week")
+    ? orderedAllForScreen.slice(-9)
+    : orderedAllForScreen;
+
+  const isDark = layout.includes("dark");
+  const isAndroid = layout.includes("android");
+  const isMT5 = layout.includes("mt5");
+  const isMT4 = layout.includes("mt4");
+
+  const canvas = document.createElement("canvas");
+  canvas.width = 828;
+  canvas.height = 1792;
+  const ctx = canvas.getContext("2d");
+
+  const bg = isDark ? "#000000" : "#ffffff";
+  const text = isDark ? "#f8f8f8" : "#0b0b0b";
+  const muted = isDark ? "#c9c9c9" : "#5c5c5c";
+  const line = isDark ? "#252525" : "#e7e7e7";
+  const blue = "#2997ff";
+  const red = "#e22b36";
+  const soft = isDark ? "#171717" : "#eeeeee";
+  const soft2 = isDark ? "#3b3b3b" : "#ffffff";
+
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, 828, 1792);
+
+  function drawText(str, x, y, size = 24, weight = "400", color = text, align = "left") {
+    ctx.font = `${weight} ${size}px Arial`;
+    ctx.fillStyle = color;
+    ctx.textAlign = align;
+    ctx.fillText(str, x, y);
+    ctx.textAlign = "left";
+  }
+
+  function lineY(y) {
+    ctx.strokeStyle = line;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(828, y);
+    ctx.stroke();
+  }
+
+  function drawStatusBar() {
+    if (isAndroid) {
+      drawText("12:30", 14, 36, 26, "700", isDark ? "#f2f2f2" : "#000");
+      drawText("4G+", 610, 36, 20, "700", isDark ? "#f2f2f2" : "#000");
+      drawText("41%", 760, 36, 22, "700", isDark ? "#f2f2f2" : "#000");
+      return;
     }
+    drawText(isMT4 ? "15:43" : "12:31", 102, 70, 32, "700", isDark ? "#fff" : "#111");
+    drawText("▮▮▮", 585, 68, 26, "700", isDark ? "#fff" : "#111");
+    drawText(isDark ? "⌁" : "5G", 640, 68, 30, "700", isDark ? "#fff" : "#111");
+    drawText(isDark ? "▰" : "65", 704, 68, 22, "700", isDark ? "#fff" : "#111");
+  }
 
-    if (!forcedStop && !laterCandidates.length) continue;
+  function drawTopTabs(y = 120) {
+    if (isAndroid && isDark) return;
+    const x = isDark ? 34 : (isMT4 ? 130 : 34);
+    const w = isDark ? 760 : (isMT4 ? 568 : 760);
+    const h = isDark ? 100 : (isMT4 ? 64 : 52);
+    const r = isDark ? 50 : (isMT4 ? 11 : 9);
 
-    const closePick = forcedStop || choose(laterCandidates);
-    const exit = closePick.exit;
+    ctx.fillStyle = soft;
+    ctx.strokeStyle = isDark ? "#3c3c3c" : "#d9d9d9";
+    roundRect(ctx, x, y, w, h, r, true, true);
 
-    let side = operationPreference === "buy" || operationPreference === "sell"
-      ? operationPreference
-      : (sourceMode === "signals" && activeSignal?.side
-          ? String(activeSignal.side).toLowerCase()
-          : (sourceMode === "scenario" && scenario?.side && scenario.side !== "auto" ? scenario.side : null));
+    ["Giorno", "Settimana", "Mese", "Personalizzato"].forEach((name, i) => {
+      const segX = x + i * w / 4;
+      const selectedItalianTab = {
+        Day: "Giorno",
+        Week: "Settimana",
+        Month: "Mese",
+        Custom: "Personalizzato"
+      }[tab] || tab;
+      if (name === selectedItalianTab) {
+        ctx.fillStyle = soft2;
+        roundRect(ctx, segX + (isDark ? 10 : 6), y + (isDark ? 10 : 5), w / 4 - (isDark ? 20 : 12), h - (isDark ? 20 : 10), isDark ? 42 : 8, true, false);
+      }
+      if (isMT4 && !isDark && i > 0) {
+        ctx.strokeStyle = "#d0d0d0";
+        ctx.beginPath();
+        ctx.moveTo(segX, y + 9);
+        ctx.lineTo(segX, y + h - 9);
+        ctx.stroke();
+      }
+      drawText(name, segX + w / 8, y + h / 2 + 11, isMT5 ? 26 : 25, "700", isDark ? "#fff" : "#111", "center");
+    });
+  }
 
-    if (!side) {
-      side = wantPositive
-        ? (exit >= entry ? "buy" : "sell")
-        : (exit >= entry ? "sell" : "buy");
-    }
+  function drawAndroidHeader() {
+    if (!(isAndroid && isDark)) return;
+    drawText("☰", 28, 76, 30, "400", "#d8d8d8");
+    drawText("Storico", 60, 63, 28, "400", "#e5e5e5");
+    drawText("Tutti i simboli", 60, 100, 20, "400", "#b8b8b8");
+    drawText("$", 730, 83, 22, "700", "#d8d8d8");
+    drawText("↕", 770, 83, 22, "700", "#d8d8d8");
+    drawText("▦", 805, 83, 22, "700", "#d8d8d8", "right");
+    lineY(118);
+  }
 
-    const lot = Number(rand(lotMin, lotMax).toFixed(2));
-    const profit = Number(pnl(side, entry, exit, lot, pointValue).toFixed(2));
+  function drawAndroidSummary() {
+    if (!(isAndroid && isDark)) return 260;
+    const y0 = 150;
+    [["Profitto:", totalProfit], ["Deposito:", Number(deposit || 0)], ["Saldo:", balance]].forEach((r, i) => {
+      const y = y0 + i * 36;
+      drawText(r[0], 28, y, 30, "700", "#d0d0d0");
+      ctx.strokeStyle = "#3b3b3b";
+      ctx.setLineDash([2, 6]);
+      ctx.beginPath();
+      ctx.moveTo(160, y - 8);
+      ctx.lineTo(700, y - 8);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      drawText(money(r[1]), 805, y, 30, "700", i === 0 ? blue : "#d0d0d0", "right");
+    });
+    lineY(258);
+    return 300;
+  }
 
-    if (wantPositive && profit <= 0) continue;
-    if (!wantPositive && profit >= 0) continue;
+  function drawRows(startY) {
+    const availableBottom = isAndroid && isDark ? 1460 : 1620;
+    const totalRows = visibleTrades.length;
+    const baseRowH = isAndroid && isDark ? 116 : (isMT4 ? 132 : 88);
+    const minRowH = isAndroid && isDark ? 82 : (isMT4 ? 92 : 70);
+    const fitRowH = totalRows > 0
+      ? Math.floor((availableBottom - startY) / totalRows)
+      : baseRowH;
 
-    reserved.add(signature(openCandle));
-    reserved.add(signature(closePick.candle));
-    reservedTimes.add(openMs);
-    reservedTimes.add(closePick.closeMs);
-    reservedMarketValues.add(marketValueKey(entry));
-    reservedMarketValues.add(marketValueKey(exit));
+    const rowH = Math.max(minRowH, Math.min(baseRowH, fitRowH));
+    const maxRows = Math.max(1, Math.floor((availableBottom - startY) / rowH));
+    const rows = visibleTrades.slice(0, maxRows);
+
+    rows.forEach((t, i) => {
+      const y = startY + i * rowH;
+      ctx.fillStyle = bg;
+      ctx.fillRect(0, y, 828, rowH);
+      lineY(y + rowH);
+
+      const sym = "XAUUSD";
+      const sideColor = t.side === "buy" ? blue : red;
+      const profitColor = Number(t.profit) >= 0 ? blue : red;
+      const scale = Math.min(1, rowH / baseRowH);
+
+      if (isAndroid && isDark) {
+        const titleY = y + Math.max(29, 38 * scale);
+        const priceY = y + Math.max(62, 86 * scale);
+        drawText(`${sym}, `, 14, titleY, Math.max(22, 28 * scale), "700", "#d7d7d7");
+        const sw = ctx.measureText(`${sym}, `).width;
+        drawText(`${t.side} ${Number(t.lot).toFixed(2)}`, 14 + sw, titleY, Math.max(22, 28 * scale), "700", sideColor);
+        drawText(`${price(t.entry)} → ${price(t.exit)}`, 14, priceY, Math.max(23, 30 * scale), "400", "#d7d7d7");
+        drawText(reportDate(t.closeTime), 810, titleY, Math.max(20, 27 * scale), "700", "#d0d0d0", "right");
+        drawText(money(t.profit), 810, priceY, Math.max(23, 30 * scale), "700", profitColor, "right");
+        return;
+      }
+
+      const titleY = y + Math.max(28, (isMT4 ? 48 : 34) * scale);
+      const priceY = y + Math.max(58, (isMT4 ? 100 : 67) * scale);
+      const titleSize = Math.max(23, (isMT4 ? 31 : 30) * scale);
+      const priceSize = Math.max(24, (isMT4 ? 33 : 30) * scale);
+      const dateSize = Math.max(19, (isMT4 ? 26 : 22) * scale);
+      const profitSize = Math.max(24, (isMT4 ? 32 : 28) * scale);
+
+      drawText(`${sym}, `, 20, titleY, titleSize, "900", text);
+      const sw = ctx.measureText(`${sym}, `).width;
+      drawText(`${t.side} ${Number(t.lot).toFixed(2)}`, 20 + sw, titleY, titleSize, "900", sideColor);
+      drawText(`${price(t.entry)} → ${price(t.exit)}`, 20, priceY, priceSize, "400", muted);
+      drawText(reportDate(t.closeTime), 810, titleY, dateSize, "700", muted, "right");
+      drawText(money(t.profit), 810, priceY, profitSize, "900", profitColor, "right");
+    });
 
     return {
+      endY: startY + rows.length * rowH,
+      shownRows: rows.length,
+      totalRows
+    };
+  }
+
+  function drawSummary(rowsInfo) {
+    if (isAndroid && isDark) return false;
+
+    const { endY, shownRows, totalRows } = rowsInfo;
+    const summaryHeight = 250;
+    const summaryBottomLimit = 1620;
+
+    if (shownRows < totalRows || endY + summaryHeight > summaryBottomLimit) {
+      return false;
+    }
+
+    const minY = isMT5 ? 1390 : 1030;
+    const sy = Math.max(endY + 16, minY);
+    lineY(sy - 20);
+
+    [["Profitto:", totalProfit], ["Credito:", Number(credit || 0)], ["Deposito:", Number(deposit || 0)], ["Prelievo:", Number(withdrawal || 0)], ["Saldo:", balance]].forEach((r, i) => {
+      const yy = sy + 38 + i * 42;
+      drawText(r[0], 20, yy, 32, "900", muted);
+      drawText(money(r[1]), 810, yy, 32, "900", muted, "right");
+    });
+
+    return true;
+  }
+
+  function drawBottomNav() {
+    if (isAndroid && isDark) {
+      ctx.fillStyle = "#050505";
+      ctx.fillRect(0, 1585, 828, 207);
+      ctx.fillStyle = "#0b0b0b";
+      ctx.fillRect(0, 1470, 828, 115);
+      ["↙", "▥", "▣", "▰", "▤", "●"].forEach((it, i) => {
+        const x = 80 + i * 135;
+        if (i === 3) {
+          ctx.fillStyle = "#1b1b1b";
+          roundRect(ctx, x - 46, 1500, 92, 60, 30, true, false);
+        }
+        drawText(it, x, 1540, 34, "700", i === 3 ? blue : "#a5a5a5", "center");
+      });
+      drawText("Ⅲ", 190, 1728, 36, "400", "#e5e5e5", "center");
+      drawText("○", 414, 1728, 42, "400", "#e5e5e5", "center");
+      drawText("‹", 650, 1728, 48, "400", "#e5e5e5", "center");
+      return;
+    }
+
+    const y = 1650;
+    lineY(y - 20);
+
+    if (isDark) {
+      ctx.fillStyle = "#151515";
+      roundRect(ctx, 45, y - 5, 738, 110, 55, true, false);
+    } else {
+      ctx.fillStyle = "#fbfbfb";
+      ctx.fillRect(0, y - 10, 828, 140);
+    }
+
+    const items = ["Quotazioni", "Grafico", "Operazioni", "Storico", "Impostazioni"];
+    const icons = ["↗", "▥", "↗", "▰", "⚙"];
+    items.forEach((item, i) => {
+      const x = 70 + i * 172;
+      if (item === "Storico") {
+        ctx.fillStyle = isDark ? "#3a3a3a" : "#dce6ff";
+        roundRect(ctx, x - 58, y + 6, 116, 76, isDark ? 38 : 10, true, false);
+      }
+      drawText(icons[i], x, y + 42, 34, "900", item === "Storico" ? "#0767e8" : "#9a9a9a", "center");
+      drawText(item, x, y + 78, 18, "700", item === "Storico" ? "#0767e8" : "#777", "center");
+    });
+
+    if (!isDark) {
+      ctx.fillStyle = "#000";
+      roundRect(ctx, 275, 1768, 280, 8, 4, true, false);
+    }
+  }
+
+  drawStatusBar();
+  drawAndroidHeader();
+
+  let startY;
+  if (isAndroid && isDark) {
+    startY = drawAndroidSummary();
+  } else {
+    drawTopTabs(isDark ? 120 : (isMT4 ? 128 : 120));
+    startY = isDark ? 240 : (isMT4 ? 208 : 195);
+  }
+
+  const rowsInfo = drawRows(startY);
+  drawSummary(rowsInfo);
+  drawBottomNav();
+
+  return new Promise(resolve => canvas.toBlob(resolve, "image/png"));
+}
+
+export default function LucaTradingAuto() {
+  const [candles, setCandles] = useState([]);
+  const [trades, setTrades] = useState([]);
+  const [autoSets, setAutoSets] = useState([]);
+  const [usedCandleKeys, setUsedCandleKeys] = useState([]);
+  const [usedMarketValueKeys, setUsedMarketValueKeys] = useState([]);
+  const [isGenerating, setIsGenerating] = useState(false);
+
+  const [layout, setLayout] = useState("ios_mt5_white");
+  const [tab, setTab] = useState("Week");
+  const [pointValue, setPointValue] = useState(100);
+  const [deposit, setDeposit] = useState(0);
+  const [credit, setCredit] = useState(0);
+  const [withdrawal, setWithdrawal] = useState(0);
+
+  const [dayFrom, setDayFrom] = useState("");
+  const [dayTo, setDayTo] = useState("");
+  const [startHour, setStartHour] = useState("08:00");
+  const [endHour, setEndHour] = useState("22:00");
+
+  const [screenCount, setScreenCount] = useState(1);
+  const [autoPositive, setAutoPositive] = useState(3);
+  const [autoNegative, setAutoNegative] = useState(0);
+  const [profitMin, setProfitMin] = useState(100);
+  const [profitMax, setProfitMax] = useState(300);
+  const [lotMin, setLotMin] = useState(0.02);
+  const [lotMax, setLotMax] = useState(0.10);
+
+  const [scenario1Side, setScenario1Side] = useState("auto");
+  const [scenario1Open, setScenario1Open] = useState("");
+  const [scenario1Close, setScenario1Close] = useState("");
+
+  const [scenario2Side, setScenario2Side] = useState("auto");
+  const [scenario2Open, setScenario2Open] = useState("");
+  const [scenario2Close, setScenario2Close] = useState("");
+
+  const [scenario3Side, setScenario3Side] = useState("auto");
+  const [scenario3Open, setScenario3Open] = useState("");
+  const [scenario3Close, setScenario3Close] = useState("");
+  const [signalText,setSignalText]=useState("");
+  const [signalStart,setSignalStart]=useState("");
+  const [signalEnd,setSignalEnd]=useState("");
+  const [signalRules,setSignalRules]=useState([]);
+  const [includePreviousDayTrade, setIncludePreviousDayTrade] = useState(false);
+  const [operationPreference, setOperationPreference] = useState("auto");
+
+
+  const totalProfit = useMemo(() => trades.reduce((a, t) => a + Number(t.profit || 0), 0), [trades]);
+
+  useEffect(() => {
+    const refreshUsedCandles = () => {
+      setUsedCandleKeys(Array.from(readUsedCandlesToday()));
+      setUsedMarketValueKeys(Array.from(readUsedMarketValues()));
+    };
+
+    refreshUsedCandles();
+    setSignalRules(readSignalRules());
+
+    // Se la pagina resta aperta oltre la mezzanotte, passa automaticamente
+    // al nuovo archivio giornaliero senza richiedere il refresh.
+    const timer = window.setInterval(refreshUsedCandles, 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const usedCandleSet = useMemo(
+    () => new Set(usedCandleKeys),
+    [usedCandleKeys]
+  );
+
+  const usedMarketValueSet = useMemo(
+    () => new Set(usedMarketValueKeys),
+    [usedMarketValueKeys]
+  );
+
+  const dayOptions = useMemo(() => {
+    const map = new Map();
+    candles.forEach(c => {
+      const key = dayKey(c.time);
+      if (!map.has(key)) map.set(key, { key, label: dayLabel(c.time) });
+    });
+    return Array.from(map.values()).sort((a, b) => a.key.localeCompare(b.key));
+  }, [candles]);
+
+  const selectedFrom = dayFrom || dayOptions[0]?.key || "";
+  const selectedTo = dayTo || dayOptions.at(-1)?.key || "";
+
+  const selectedDayKeys = useMemo(() => {
+    const from = selectedFrom <= selectedTo ? selectedFrom : selectedTo;
+    const to = selectedFrom <= selectedTo ? selectedTo : selectedFrom;
+    return dayOptions.map(d => d.key).filter(k => k >= from && k <= to);
+  }, [dayOptions, selectedFrom, selectedTo]);
+
+  const selectedCandles = useMemo(() => {
+    if (!selectedDayKeys.length) return candles;
+    const set = new Set(selectedDayKeys);
+    return candles.filter(c => set.has(dayKey(c.time)));
+  }, [candles, selectedDayKeys]);
+
+  async function loadCSV(file) {
+    if (file.name.toLowerCase().endsWith(".numbers")) {
+      alert("Il file .numbers non può essere letto direttamente. Esportalo prima in CSV.");
+      return;
+    }
+
+    // Parser CSV locale: gestisce correttamente anche intestazioni tra virgolette
+    // che contengono virgole, come quelle del CSV OANDA attuale.
+    function parseCsvLine(line) {
+      const fields = [];
+      let value = "";
+      let quoted = false;
+
+      for (let i = 0; i < line.length; i += 1) {
+        const ch = line[i];
+
+        if (ch === '"') {
+          if (quoted && line[i + 1] === '"') {
+            value += '"';
+            i += 1;
+          } else {
+            quoted = !quoted;
+          }
+        } else if (ch === "," && !quoted) {
+          fields.push(value);
+          value = "";
+        } else {
+          value += ch;
+        }
+      }
+
+      fields.push(value);
+      return fields;
+    }
+
+    try {
+      let raw = await file.text();
+
+      if (!raw || !raw.trim()) {
+        return alert("CSV realmente vuoto.");
+      }
+
+      raw = raw
+        .replace(/^\uFEFF/, "")
+        .replace(/\r\n/g, "\n")
+        .replace(/\r/g, "\n");
+
+      const lines = raw
+        .split("\n")
+        .filter(line => line.trim() !== "");
+
+      if (lines.length < 2) {
+        return alert("Il CSV non contiene righe dati.");
+      }
+
+      const headers = parseCsvLine(lines[0]).map(h =>
+        String(h ?? "").replace(/^\uFEFF/, "").trim()
+      );
+
+      const rows = lines.slice(1).map(line => {
+        const values = parseCsvLine(line);
+        const row = {};
+
+        headers.forEach((header, index) => {
+          row[header] = values[index] ?? "";
+        });
+
+        return row;
+      });
+
+      const firstRow = rows[0] || {};
+
+      const h = {
+        time: findHeader(firstRow, ["time", "datetime", "date", "data", "timestamp", "time utc", "time (utc)", "ora", "data ora"]),
+        open: findHeader(firstRow, ["open", "apertura", "o"]),
+        high: findHeader(firstRow, ["high", "massimo", "max", "h"]),
+        low: findHeader(firstRow, ["low", "minimo", "min", "l"]),
+        close: findHeader(firstRow, ["close", "chiusura", "c"]),
+        volume: findHeader(firstRow, ["volume", "vol", "tick volume", "vol."])
+      };
+
+      if (!h.time || !h.open || !h.high || !h.low || !h.close) {
+        console.error("Intestazioni CSV:", headers);
+        return alert("CSV non valido. Servono le colonne time, open, high, low e close.");
+      }
+
+      const parsed = rows
+        .map((r, index) => {
+          const t = parseDate(r[h.time]);
+
+          return {
+            id: `row_${index}`,
+            rowIndex: index + 1,
+            rawTime: String(r[h.time] ?? ""),
+            time: t,
+            open: toNum(r[h.open]),
+            high: toNum(r[h.high]),
+            low: toNum(r[h.low]),
+            close: toNum(r[h.close]),
+            volume: h.volume ? toNum(r[h.volume]) : 0
+          };
+        })
+        .filter(c =>
+          c.time &&
+          !Number.isNaN(c.time.getTime()) &&
+          ![c.open, c.high, c.low, c.close].some(Number.isNaN)
+        )
+        .sort((a, b) => a.time - b.time);
+
+      if (!parsed.length) {
+        console.error("Prime righe CSV:", rows.slice(0, 3));
+        return alert("Il CSV è stato letto, ma nessuna candela OHLC valida è stata trovata.");
+      }
+
+      const days = Array.from(new Set(parsed.map(c => dayKey(c.time)))).sort();
+
+      setCandles(parsed);
+      setDayFrom(days[0] || "");
+      setDayTo(days.at(-1) || "");
+      setTrades([]);
+      setAutoSets([]);
+    } catch (error) {
+      console.error("Errore import CSV:", error);
+      alert(`Errore durante la lettura del CSV: ${error?.message || "errore sconosciuto"}`);
+    }
+  }
+
+
+  function addSignalRule(){
+    const p=parseSignalText(signalText); if(!p)return alert("Segnale non leggibile: servono XAUUSD BUY/SELL ed Entry.");
+    if(!signalStart)return alert("Indica data e ora di inizio.");
+    const start=new Date(signalStart), end=signalEnd?new Date(signalEnd):null;
+    if(Number.isNaN(start.getTime())||(end&&Number.isNaN(end.getTime())))return alert("Data/ora non valida.");
+    if(end&&end<=start)return alert("La fine deve essere successiva all'inizio.");
+    const rule={id:`${Date.now()}-${Math.random().toString(36).slice(2,8)}`,text:signalText.trim(),start:start.toISOString(),end:end?end.toISOString():null,...p};
+    const next=[...signalRules,rule].sort((a,b)=>new Date(a.start)-new Date(b.start)); setSignalRules(next);saveSignalRules(next);
+    setSignalText("");setSignalStart("");setSignalEnd("");
+  }
+  function stopSignalRule(id){
+    const next=signalRules.map(r=>r.id===id&&!r.end?{...r,end:new Date().toISOString()}:r);setSignalRules(next);saveSignalRules(next);
+  }
+  function removeSignalRule(id){const next=signalRules.filter(r=>r.id!==id);setSignalRules(next);saveSignalRules(next);}
+
+  function scenarios() {
+    return [
+      { side: scenario1Side, open: scenario1Open, close: scenario1Close },
+      { side: scenario2Side, open: scenario2Open, close: scenario2Close },
+      { side: scenario3Side, open: scenario3Open, close: scenario3Close }
+    ].map(s => ({
+      side: s.side,
+      open: String(s.open).trim() === "" ? null : Number(String(s.open).replace(",", ".")),
+      close: String(s.close).trim() === "" ? null : Number(String(s.close).replace(",", "."))
+    }));
+  }
+
+  function validTimePool(day) {
+    const [sh, sm] = String(startHour || "00:00").split(":").map(Number);
+    const [eh, em] = String(endHour || "23:59").split(":").map(Number);
+    return candles.filter(c => {
+      if (dayKey(c.time) !== day) return false;
+      const p = partsIT(c.time);
+      const m = Number(p.hour) * 60 + Number(p.minute);
+      return m >= sh * 60 + sm && m <= eh * 60 + em;
+    });
+  }
+
+  async function generateAuto() {
+    if (!candles.length) return alert("Carica prima il CSV.");
+
+    const allCsvDays = dayOptions.map(d => d.key).sort();
+    const latestCsvDay = allCsvDays.at(-1) || "";
+    const previousCsvDay = allCsvDays.at(-2) || "";
+
+    if (!latestCsvDay) return alert("Nessun giorno disponibile nel CSV.");
+    if (isGenerating) return;
+
+    // Tutti i giorni selezionati sono generati separatamente.
+    const daysToGenerate = selectedDayKeys.length ? [...selectedDayKeys].sort() : [...allCsvDays];
+    const pools = daysToGenerate.map(day => ({
+      day,
+      candles: validTimePool(day).map(c => ({
+        id: c.id, time: c.time.toISOString(), open: c.open,
+        high: c.high, low: c.low, close: c.close
+      }))
+    }));
+    const missingDays = pools.filter(group => group.candles.length < 5);
+    if (missingDays.length) {
+      return alert("Candele insufficienti nei giorni: " + missingDays.map(g => g.day).join(", "));
+    }
+    if (!pools.length) return alert("Nessun giorno selezionato.");
+
+    let previousDayPool = null;
+    if (includePreviousDayTrade) {
+      if (!previousCsvDay) {
+        return alert("Per usare l'operazione del giorno precedente il CSV deve contenere almeno due giorni.");
+      }
+
+      const previousCandles = candles
+        .filter(c => dayKey(c.time) === previousCsvDay)
+        .map(c => ({
+          id: c.id,
+          time: c.time.toISOString(),
+          open: c.open,
+          high: c.high,
+          low: c.low,
+          close: c.close
+        }));
+
+      if (previousCandles.length < 2) {
+        return alert("Nel giorno precedente non ci sono abbastanza candele.");
+      }
+
+      const hasPreviousSignal = signalRules.some(rule => {
+        const start = new Date(rule.start);
+        if (Number.isNaN(start.getTime())) return false;
+        const end = rule.end ? new Date(rule.end) : null;
+        return dayKey(start) === previousCsvDay ||
+          (end && !Number.isNaN(end.getTime()) && dayKey(end) === previousCsvDay);
+      });
+
+      if (!hasPreviousSignal) {
+        return alert("Non trovo in memoria un segnale operativo relativo al giorno precedente.");
+      }
+
+      previousDayPool = { day: previousCsvDay, candles: previousCandles };
+    }
+
+    setIsGenerating(true);
+
+    try {
+      const response = await fetch("/api/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          pools,
+          usedCandleKeys: Array.from(usedCandleSet),
+          usedMarketValueKeys: Array.from(usedMarketValueSet),
+          scenarios: scenarios(),
+          signalRules,
+          includePreviousDayTrade,
+          previousDayPool,
+          operationPreference,
+          settings: {
+            screenCount: Number(screenCount || 1),
+            autoPositive: Number(autoPositive || 0),
+            autoNegative: Number(autoNegative || 0),
+            profitMin: Number(profitMin),
+            profitMax: Number(profitMax),
+            lotMin: Number(lotMin),
+            lotMax: Number(lotMax),
+            pointValue: Number(pointValue)
+          }
+        })
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result?.error || "Errore durante la generazione.");
+      }
+
+      const created = (result.sets || []).map(set => ({
+        ...set,
+        trades: set.trades.map(t => ({
+          ...t,
+          openTime: new Date(t.openTime),
+          closeTime: new Date(t.closeTime)
+        }))
+      }));
+
+      if (!created.length) {
+        alert(result?.message || "Non riesco a generare operazioni con questi vincoli.");
+        return;
+      }
+
+      const updatedUsed = new Set(result.usedCandleKeys || []);
+      saveUsedCandlesToday(updatedUsed);
+      setUsedCandleKeys(Array.from(updatedUsed));
+
+      const updatedMarketValues = new Set(result.usedMarketValueKeys || []);
+      saveUsedMarketValues(updatedMarketValues);
+      setUsedMarketValueKeys(Array.from(updatedMarketValues));
+
+      setAutoSets(created);
+      setTrades(
+        [...created[0].trades].sort(
+          (a, b) => new Date(a.closeTime).getTime() - new Date(b.closeTime).getTime()
+        )
+      );
+
+      if (result.partial) {
+        alert(`Generate ${created.length} schermate su ${Number(screenCount || 1)}. Prova ad allargare i vincoli per ottenere le altre.`);
+      }
+    } catch (error) {
+      console.error(error);
+      alert(error?.message || "Il backend non ha completato la generazione.");
+    } finally {
+      setIsGenerating(false);
+    }
+  }
+
+  function sortByCloseTime() {
+    setTrades(prev => [...prev].sort(
+      (a, b) => new Date(a.closeTime).getTime() - new Date(b.closeTime).getTime()
+    ));
+  }
+
+  function moveTrade(index, direction) {
+    setTrades(prev => {
+      const target = index + direction;
+      if (target < 0 || target >= prev.length) return prev;
+
+      const next = [...prev];
+      [next[index], next[target]] = [next[target], next[index]];
+      return next;
+    });
+  }
+
+  function updateTrade(index, field, value) {
+    setTrades(prev => prev.map((t, i) => {
+      if (i !== index) return t;
+      const u = { ...t };
+
+      if (field === "side") u.side = value;
+      if (field === "lot") u.lot = toNum(value);
+      if (field === "entry") u.entry = toNum(value);
+      if (field === "exit") u.exit = toNum(value);
+      if (field === "openDate") u.openTime = dateFromInputs(value, htmlTime(t.openTime));
+      if (field === "openTime") u.openTime = dateFromInputs(htmlDate(t.openTime), value);
+      if (field === "closeDate") u.closeTime = dateFromInputs(value, htmlTime(t.closeTime));
+      if (field === "closeTime") u.closeTime = dateFromInputs(htmlDate(t.closeTime), value);
+
+      u.profit = Number(pnl(u.side, u.entry, u.exit, u.lot, Number(pointValue)).toFixed(2));
+      return u;
+    }).sort((a, b) => new Date(a.closeTime).getTime() - new Date(b.closeTime).getTime()));
+  }
+
+  async function screenshot() {
+    if (!trades.length) return alert("Prima genera o aggiungi almeno una operazione.");
+    const blob = await renderReportBlob(trades, layout, tab, deposit, credit, withdrawal);
+    downloadBlob(blob, "luca_trading_report.png");
+  }
+
+  async function downloadAutoZip() {
+    if (!autoSets.length) return alert("Genera prima gli screen.");
+    const zip = new JSZip();
+    const rows = ["screen,side,lot,open_time,entry,close_time,exit,profit"];
+
+    for (const set of autoSets) {
+      const orderedSet = [...set.trades].sort(
+        (a, b) => new Date(a.closeTime).getTime() - new Date(b.closeTime).getTime()
+      );
+      const blob = await renderReportBlob(orderedSet, layout, tab, deposit, credit, withdrawal);
+      zip.file(`${set.name}.png`, blob);
+      orderedSet.forEach(t => {
+        rows.push(`${set.name},${t.side},${Number(t.lot).toFixed(2)},${itDate(t.openTime)},${price(t.entry)},${itDate(t.closeTime)},${price(t.exit)},${Number(t.profit).toFixed(2)}`);
+      });
+    }
+
+    zip.file("operazioni_generate.csv", rows.join("\n"));
+    const content = await zip.generateAsync({ type: "blob" });
+    downloadBlob(content, "luca_trading_reports.zip");
+  }
+
+  function addBlankTrade() {
+    const available = selectedCandles.filter(
+      c => !usedCandleSet.has(candleSignature(c))
+    );
+
+    const base = available[0];
+    const next = available[1];
+
+    if (!base || !next) {
+      return alert("Non ci sono almeno due candele nuove disponibili per oggi.");
+    }
+
+    const side = "buy";
+    const lot = 0.050;
+    const entry = base.open;
+    const exit = next.close;
+
+    const updatedUsed = new Set(usedCandleSet);
+    updatedUsed.add(candleSignature(base));
+    updatedUsed.add(candleSignature(next));
+    saveUsedCandlesToday(updatedUsed);
+    setUsedCandleKeys(Array.from(updatedUsed));
+
+    setTrades(prev => [...prev, {
       side,
       lot,
-      openCandleId: openCandle.id,
-      closeCandleId: closePick.candle.id,
-      openTime: withRandomSecond(openCandle.time),
-      closeTime: withRandomSecond(closePick.candle.time),
+      openCandleId: base.id,
+      closeCandleId: next.id,
+      openTime: withRandomSecond(base.time),
+      closeTime: withRandomSecond(next.time),
       entry,
       exit,
-      entrySource: "intermedio",
-      exitSource: "intermedio",
-      profit
-    };
+      entrySource: "open",
+      exitSource: "close",
+      profit: Number(pnl(side, entry, exit, lot, Number(pointValue)).toFixed(2))
+    }].sort((a, b) => new Date(a.closeTime).getTime() - new Date(b.closeTime).getTime()));
   }
 
-  return null;
-}
+  return (
+    <main className="page">
+      <header className="top">
+        <div>
+          <h1>🥇 Luca Trading Definitivo</h1>
+          <p>1) Settaggi sopra · 2) Operazioni sotto · 3) Screenshot finale.</p>
+        </div>
+        <button className="primary" onClick={screenshot}>Scarica screenshot</button>
+      </header>
+
+      <section className="panel">
+        <h2>1. Settaggi</h2>
+        <div className="grid">
+          <label>CSV TradingView/OANDA/Numbers<input type="file" accept=".csv,.txt,.tsv,.numbers" onChange={e => e.target.files?.[0] && loadCSV(e.target.files[0])}/></label>
+          <label>Layout<select value={layout} onChange={e => setLayout(e.target.value)}><option value="ios_mt5_white">iOS MT5 bianco</option><option value="ios_mt5_dark">iOS MT5 nero</option><option value="ios_mt4_white">iOS MT4 bianco</option><option value="ios_mt4_dark">iOS MT4 nero</option><option value="android_mt4_white">Android MT4 bianco</option><option value="android_mt4_dark">Android MT4 nero</option><option value="luca_android_white">LUCA android bianco</option><option value="luca_android_dark">LUCA android nero</option><option value="luca_ios_white">LUCA IOS bianco</option><option value="luca_ios_dark">LUCA IOS nero</option></select></label>
+          <label>Periodo nello screen<select value={tab} onChange={e => setTab(e.target.value)}><option value="Day">Giorno</option><option value="Week">Settimana</option><option value="Month">Mese</option><option value="Custom">Personalizzato</option></select></label>
+          <label>Valore punto 1 lotto<input type="number" value={pointValue} onChange={e => setPointValue(e.target.value)}/></label>
+          <label>Deposit<input type="number" value={deposit} onChange={e => setDeposit(e.target.value)}/></label>
+          <label>Credit<input type="number" value={credit} onChange={e => setCredit(e.target.value)}/></label>
+          <label>Withdrawal<input type="number" value={withdrawal} onChange={e => setWithdrawal(e.target.value)}/></label>
+        </div>
+
+        <h3>Periodo</h3>
+        <div className="grid">
+          <label>Giorno da<select value={selectedFrom} onChange={e => setDayFrom(e.target.value)}>{dayOptions.map(d => <option key={d.key} value={d.key}>{d.label}</option>)}</select></label>
+          <label>Giorno a<select value={selectedTo} onChange={e => setDayTo(e.target.value)}>{dayOptions.map(d => <option key={d.key} value={d.key}>{d.label}</option>)}</select></label>
+          <label>Ora inizio<input value={startHour} onChange={e => setStartHour(e.target.value)} placeholder="09:30"/></label>
+          <label>Ora fine<input value={endHour} onChange={e => setEndHour(e.target.value)} placeholder="18:45"/></label>
+        </div>
+
+        <h3>Generazione</h3>
+        <div style={{marginBottom:"14px"}}>
+          <label style={{display:"flex",alignItems:"center",gap:"10px",cursor:"pointer"}}>
+            <input
+              type="checkbox"
+              checked={includePreviousDayTrade}
+              onChange={e => setIncludePreviousDayTrade(e.target.checked)}
+            />
+            <span><b>Operazione aperta dal giorno precedente</b> — usa 1 operazione del penultimo giorno del CSV, basata sul segnale salvato in memoria. Le nuove operazioni restano solo nell'ultimo giorno.</span>
+          </label>
+        </div>
+        <div style={{marginBottom:"14px",maxWidth:"360px"}}>
+          <label>
+            Preferenza operazioni
+            <select value={operationPreference} onChange={e => setOperationPreference(e.target.value)}>
+              <option value="auto">Automatico</option>
+              <option value="buy">BUY</option>
+              <option value="sell">SELL</option>
+            </select>
+          </label>
+          <p className="hint" style={{marginTop:"6px"}}>
+            Vale per tutte le operazioni generate: giorno corrente e, se attiva, operazione del giorno precedente.
+          </p>
+        </div>
+        <div className="grid">
+          <label>Numero screen<input type="number" value={screenCount} onChange={e => setScreenCount(e.target.value)}/></label>
+          <label>Positive per giorno<input type="number" value={autoPositive} onChange={e => setAutoPositive(e.target.value)}/></label>
+          <label>Negative per giorno<input type="number" value={autoNegative} onChange={e => setAutoNegative(e.target.value)}/></label>
+          <label>Profitto totale min<input type="number" value={profitMin} onChange={e => setProfitMin(e.target.value)}/></label>
+          <label>Profitto totale max<input type="number" value={profitMax} onChange={e => setProfitMax(e.target.value)}/></label>
+          <label>Lotto min<input type="number" step="0.01" value={lotMin} onChange={e => setLotMin(e.target.value)}/></label>
+          <label>Lotto max<input type="number" step="0.01" value={lotMax} onChange={e => setLotMax(e.target.value)}/></label>
+        </div>
+
+        <h3>3 scenari opzionali</h3>
+        <p className="hint">Lascia vuoto ciò che vuoi automatico. Se scrivi un prezzo, l’app prende dal CSV il valore reale OHLC più vicino: open, high, low o close.</p>
+        <div className="scenario-grid">
+          <b>Scenario</b><b>Tipo</b><b>Apertura</b><b>Chiusura</b>
+          <span>1</span><select value={scenario1Side} onChange={e => setScenario1Side(e.target.value)}><option value="auto">Automatico</option><option value="buy">BUY</option><option value="sell">SELL</option></select><input type="number" step="0.01" value={scenario1Open} onChange={e => setScenario1Open(e.target.value)} placeholder="automatico"/><input type="number" step="0.01" value={scenario1Close} onChange={e => setScenario1Close(e.target.value)} placeholder="automatico"/>
+          <span>2</span><select value={scenario2Side} onChange={e => setScenario2Side(e.target.value)}><option value="auto">Automatico</option><option value="buy">BUY</option><option value="sell">SELL</option></select><input type="number" step="0.01" value={scenario2Open} onChange={e => setScenario2Open(e.target.value)} placeholder="automatico"/><input type="number" step="0.01" value={scenario2Close} onChange={e => setScenario2Close(e.target.value)} placeholder="automatico"/>
+          <span>3</span><select value={scenario3Side} onChange={e => setScenario3Side(e.target.value)}><option value="auto">Automatico</option><option value="buy">BUY</option><option value="sell">SELL</option></select><input type="number" step="0.01" value={scenario3Open} onChange={e => setScenario3Open(e.target.value)} placeholder="automatico"/><input type="number" step="0.01" value={scenario3Close} onChange={e => setScenario3Close(e.target.value)} placeholder="automatico"/>
+        </div>
 
 
-function buildTradeByPriority({ wantPositive, pool, scenarios, signalRules, scenarioCursorRef, reserved, reservedTimes, reservedMarketValues, lotMin, lotMax, pointValue, operationPreference }) {
-  let trade = buildTrade({ wantPositive, pool, scenario:null, signalRules, sourceMode:"signals", operationPreference, reserved, reservedTimes, reservedMarketValues, lotMin, lotMax, pointValue });
-  if (trade) return trade;
-  const usable=(Array.isArray(scenarios)?scenarios:[]).filter(x => (x?.side && x.side!=="auto") || Number.isFinite(Number(x?.open)) || Number.isFinite(Number(x?.close)));
-  for (let i=0;i<usable.length;i++) {
-    const scenario=usable[scenarioCursorRef.value++ % usable.length];
-    trade=buildTrade({ wantPositive, pool, scenario, signalRules:[], sourceMode:"scenario", operationPreference, reserved, reservedTimes, reservedMarketValues, lotMin, lotMax, pointValue });
-    if (trade) return trade;
-  }
-  return buildTrade({ wantPositive, pool, scenario:null, signalRules:[], sourceMode:"auto", operationPreference, reserved, reservedTimes, reservedMarketValues, lotMin, lotMax, pointValue });
-}
 
-function buildPreviousDayTrade({
-  previousGroup,
-  latestGroup,
-  signalRules,
-  operationPreference,
-  reserved,
-  reservedTimes,
-  confirmedMarketValues,
-  lotMin,
-  lotMax,
-  pointValue
-}) {
-  if (!previousGroup?.day || !latestGroup?.day) return null;
-  if (!Array.isArray(previousGroup.candles) || !Array.isArray(latestGroup.candles)) return null;
+        <div className="actions">
+          <button className="primary" disabled={isGenerating} onClick={generateAuto}>{isGenerating ? "Generazione in corso..." : "Genera operazioni"}</button>
+          <button onClick={addBlankTrade}>Aggiungi riga manuale</button>
+          <button onClick={downloadAutoZip}>Scarica ZIP screen</button>
+        </div>
 
-  const previousDay = String(previousGroup.day);
-  const latestDay = String(latestGroup.day);
+        <div className="stats">
+          <div><span>Candele totali</span><b>{candles.length}</b></div>
+          <div><span>Candele disponibili oggi</span><b>{selectedCandles.filter(c => !usedCandleSet.has(candleSignature(c))).length}</b></div>
+          <div><span>Candele già usate oggi</span><b>{usedCandleKeys.length}</b></div>
+          <div><span>Profitto tabella</span><b className={totalProfit >= 0 ? "pos" : "neg"}>{money(totalProfit)}</b></div>
+        </div>
+      </section>
 
-  const previousValues = new Set(
-    Array.from(confirmedMarketValues)
-      .filter(key => String(key).startsWith(`${previousDay}|`))
-      .map(key => String(key).slice(previousDay.length + 1))
+      <section className="panel">
+        <h2>2. Operazioni modificabili</h2>
+        <p className="hint">Puoi cambiare tutto: tipo, lotto, date, orari, apertura e chiusura. Il P/L si aggiorna subito.</p>
+        <div className="actions">
+          <button onClick={sortByCloseTime}>Ordina per data e ora di chiusura</button>
+        </div>
+
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Tipo</th>
+              <th>Lotto</th>
+              <th>Data apertura</th>
+              <th>Ora apertura</th>
+              <th>Prezzo apertura</th>
+              <th>Data chiusura</th>
+              <th>Ora chiusura</th>
+              <th>Prezzo chiusura</th>
+              <th>P/L</th>
+              <th>Sposta</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {trades.map((t, i) =>
+              <tr key={i}>
+                <td>{i + 1}</td>
+                <td><select className="table-input" value={t.side} onChange={e => updateTrade(i, "side", e.target.value)}><option value="buy">BUY</option><option value="sell">SELL</option></select></td>
+                <td><input className="table-input small" type="number" step="0.01" value={t.lot} onChange={e => updateTrade(i, "lot", e.target.value)}/></td>
+                <td><input className="table-input date" type="date" value={htmlDate(t.openTime)} onChange={e => updateTrade(i, "openDate", e.target.value)}/></td>
+                <td><input className="table-input time" value={htmlTime(t.openTime)} onChange={e => updateTrade(i, "openTime", e.target.value)}/></td>
+                <td><input className="table-input price" type="number" step="0.01" value={t.entry} onChange={e => updateTrade(i, "entry", e.target.value)}/>{t.entrySource && <small className="source">CSV {t.entrySource}</small>}</td>
+                <td><input className="table-input date" type="date" value={htmlDate(t.closeTime)} onChange={e => updateTrade(i, "closeDate", e.target.value)}/></td>
+                <td><input className="table-input time" value={htmlTime(t.closeTime)} onChange={e => updateTrade(i, "closeTime", e.target.value)}/></td>
+                <td><input className="table-input price" type="number" step="0.01" value={t.exit} onChange={e => updateTrade(i, "exit", e.target.value)}/>{t.exitSource && <small className="source">CSV {t.exitSource}</small>}</td>
+                <td className={Number(t.profit) >= 0 ? "pos" : "neg"}>{money(t.profit)}</td>
+                <td>
+                  <div style={{display:"flex", gap:"6px"}}>
+                    <button
+                      type="button"
+                      title="Sposta sopra"
+                      disabled={i === 0}
+                      onClick={() => moveTrade(i, -1)}
+                    >↑</button>
+                    <button
+                      type="button"
+                      title="Sposta sotto"
+                      disabled={i === trades.length - 1}
+                      onClick={() => moveTrade(i, 1)}
+                    >↓</button>
+                  </div>
+                </td>
+                <td><button onClick={() => setTrades(trades.filter((_, x) => x !== i))}>×</button></td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </section>
+
+      <section className="panel">
+          <h3>Range segnali operativi</h3>
+          <p className="hint">Indica inizio e, se conosciuta, fine. Senza fine il segnale resta valido. I range restano salvati anche dopo il refresh.</p>
+          <div className="grid">
+            <label style={{gridColumn:"span 2"}}>Testo segnale<textarea value={signalText} onChange={e=>setSignalText(e.target.value)} rows={8} style={{width:"100%",resize:"vertical"}} placeholder={"Apro una nuova operazione 🚀\nXAUUSD SELL\nEntry: 4155.11 - 4158.29\nSL: 4183.39\nTP1: 4154.57\nTP2: 4146.04\nTP3: 4116.72\nTP4: 4023.41"}/></label>
+            <label>Data e ora inizio<input type="datetime-local" value={signalStart} onChange={e=>setSignalStart(e.target.value)}/></label>
+            <label>Data e ora fine (facoltativa)<input type="datetime-local" value={signalEnd} onChange={e=>setSignalEnd(e.target.value)}/></label>
+          </div>
+          <div className="actions"><button type="button" className="primary" onClick={addSignalRule}>Salva range</button></div>
+          {signalRules.map(r=><div key={r.id} style={{border:"1px solid #29415b",borderRadius:"10px",padding:"12px",marginTop:"10px"}}>
+            <b>{r.side.toUpperCase()} · Entry {price(r.entryMin)} - {price(r.entryMax)}</b>
+            <div className="hint">{itDate(new Date(r.start),false)} → {r.end?itDate(new Date(r.end),false):"IN CORSO"}</div>
+            <div className="actions">{!r.end&&<button type="button" onClick={()=>stopSignalRule(r.id)}>Stop adesso</button>}<button type="button" onClick={()=>removeSignalRule(r.id)}>Elimina</button></div>
+          </div>)}
+      </section>
+
+      <section className="panel final">
+        <h2>3. Screenshot</h2>
+        <p>Quando le operazioni sono corrette, scarica lo screenshot finale.</p>
+        <button className="primary big" onClick={screenshot}>Scarica screenshot finale</button>
+      </section>
+
+
+    </main>
   );
-  const latestValues = new Set(
-    Array.from(confirmedMarketValues)
-      .filter(key => String(key).startsWith(`${latestDay}|`))
-      .map(key => String(key).slice(latestDay.length + 1))
-  );
-
-  const opens = previousGroup.candles
-    .filter(c => c?.id && c?.time)
-    .sort((a,b) => new Date(a.time) - new Date(b.time));
-
-  const closes = latestGroup.candles
-    .filter(c => c?.id && c?.time)
-    .sort((a,b) => new Date(a.time) - new Date(b.time));
-
-  if (!opens.length || !closes.length) return null;
-
-  for (let attempt = 0; attempt < MAX_TRADE_ATTEMPTS; attempt += 1) {
-    const openCandle = choose(opens);
-    const openMs = new Date(openCandle.time).getTime();
-    if (!Number.isFinite(openMs) || !isTimeFarEnough(openMs, reservedTimes)) continue;
-    if (reserved.has(signature(openCandle))) continue;
-
-    const rules = signalRulesForTime(signalRules, openMs, operationPreference);
-    if (!rules.length) continue;
-
-    const candidates = rules.map(signal => {
-      const entry = interiorPrice(openCandle, {
-        min: Number(signal.entryMin),
-        max: Number(signal.entryMax)
-      });
-      return entry === null ? null : {signal, entry};
-    }).filter(Boolean);
-
-    if (!candidates.length) continue;
-
-    const picked = choose(candidates);
-    const activeSignal = picked.signal;
-    const entry = picked.entry;
-    if (previousValues.has(marketValueKey(entry))) continue;
-
-    // FONDAMENTALE: la chiusura viene cercata ESCLUSIVAMENTE nell'ultimo giorno.
-    // Se lo SL viene raggiunto prima di una chiusura scelta, chiudiamo obbligatoriamente lì.
-    const side = operationPreference === "buy" || operationPreference === "sell"
-      ? operationPreference
-      : String(activeSignal.side).toLowerCase();
-    const exitCandidates = [];
-    let forcedStop = null;
-
-    for (const closeCandle of closes) {
-      const closeMs = new Date(closeCandle.time).getTime();
-      if (!Number.isFinite(closeMs) || closeMs <= openMs) continue;
-      if (!isTimeFarEnough(closeMs, reservedTimes)) continue;
-      if (reserved.has(signature(closeCandle))) continue;
-
-      if (stopLossHit(closeCandle, side, activeSignal.sl)) {
-        const stopExit = stopLossExitPrice(closeCandle, side, activeSignal.sl);
-        if (stopExit !== null && !latestValues.has(marketValueKey(stopExit))) {
-          forcedStop = {candle: closeCandle, closeMs, exit: stopExit, stoppedOut: true};
-        }
-        break;
-      }
-
-      const exit = interiorPrice(closeCandle, signalExitBounds(activeSignal));
-      if (exit === null) continue;
-      if (marketValueKey(exit) === marketValueKey(entry)) continue;
-      if (latestValues.has(marketValueKey(exit))) continue;
-      exitCandidates.push({candle: closeCandle, closeMs, exit, stoppedOut: false});
-    }
-    if (!forcedStop && !exitCandidates.length) continue;
-
-    const closePick = forcedStop || choose(exitCandidates);
-    const exit = closePick.exit;
-
-    const lot = Number(rand(lotMin, lotMax).toFixed(2));
-    const profit = Number(pnl(side, entry, exit, lot, pointValue).toFixed(2));
-    if (profit === 0) continue;
-
-    reserved.add(signature(openCandle));
-    reserved.add(signature(closePick.candle));
-    reservedTimes.add(openMs);
-    reservedTimes.add(closePick.closeMs);
-    confirmedMarketValues.add(`${previousDay}|${marketValueKey(entry)}`);
-    confirmedMarketValues.add(`${latestDay}|${marketValueKey(exit)}`);
-
-    return {
-      side, lot,
-      openCandleId: openCandle.id,
-      closeCandleId: closePick.candle.id,
-      openTime: withRandomSecond(openCandle.time),
-      closeTime: withRandomSecond(closePick.candle.time),
-      entry, exit,
-      entrySource: "intermedio",
-      exitSource: "intermedio",
-      profit,
-      carriedFromPreviousDay: true
-    };
-  }
-  return null;
-}
-
-export async function POST(request) {
-  try {
-    const body = await request.json();
-    const pools = Array.isArray(body?.pools) ? body.pools : [];
-    const scenarios = Array.isArray(body?.scenarios) && body.scenarios.length
-      ? body.scenarios
-      : [{ side: "auto", open: null, close: null }];
-
-    const signalRules = Array.isArray(body?.signalRules) ? body.signalRules : [];
-    const includePreviousDayTrade = Boolean(body?.includePreviousDayTrade);
-    const operationPreference = ["buy", "sell"].includes(String(body?.operationPreference).toLowerCase())
-      ? String(body.operationPreference).toLowerCase()
-      : "auto";
-    const previousDayPool = body?.previousDayPool && Array.isArray(body.previousDayPool.candles)
-      ? body.previousDayPool
-      : null;
-    const settings = body?.settings || {};
-    const screenCount = Math.max(1, Math.min(50, Number(settings.screenCount || 1)));
-    const autoPositive = Math.max(0, Math.min(50, Number(settings.autoPositive || 0)));
-    const autoNegative = Math.max(0, Math.min(50, Number(settings.autoNegative || 0)));
-    const profitMin = Number(settings.profitMin);
-    const profitMax = Number(settings.profitMax);
-    const lotMin = Number(settings.lotMin);
-    const lotMax = Number(settings.lotMax);
-    const pointValue = Number(settings.pointValue);
-
-    if (!pools.length) {
-      return NextResponse.json(
-        { error: "Nessuna candela valida ricevuta dal frontend." },
-        { status: 400 }
-      );
-    }
-
-    if (![profitMin, profitMax, lotMin, lotMax, pointValue].every(Number.isFinite)) {
-      return NextResponse.json(
-        { error: "Uno o più parametri numerici non sono validi." },
-        { status: 400 }
-      );
-    }
-
-    const confirmedUsed = new Set(
-      Array.isArray(body?.usedCandleKeys) ? body.usedCandleKeys : []
-    );
-
-    // Formato chiave: YYYY-MM-DD|PREZZO_A_2_DECIMALI
-    const confirmedMarketValues = new Set(
-      Array.isArray(body?.usedMarketValueKeys) ? body.usedMarketValueKeys : []
-    );
-
-    const sets = [];
-
-    for (let screenIndex = 0; screenIndex < screenCount; screenIndex += 1) {
-      let best = null;
-
-      for (let attempt = 0; attempt < MAX_SCREEN_ATTEMPTS; attempt += 1) {
-        const trades = [];
-        const attemptUsed = new Set(confirmedUsed);
-        const attemptTimes = new Set();
-        let scenarioCursor = 0;
-
-        const requiredPerDay = autoPositive + autoNegative;
-        const validGroups = pools.filter(group => Array.isArray(group?.candles) && group.candles.length);
-        let attemptValid = validGroups.length > 0;
-
-        for (const group of validGroups) {
-          const pool = group.candles
-            .filter(c => c?.id && c?.time)
-            .sort((a, b) => new Date(a.time) - new Date(b.time));
-
-          if (pool.length < requiredPerDay * 2) {
-            attemptValid = false;
-            break;
-          }
-
-          const dayTrades = [];
-          const dayPrefix = `${group.day}|`;
-          const dayMarketValues = new Set(
-            Array.from(confirmedMarketValues)
-              .filter(key => String(key).startsWith(dayPrefix))
-              .map(key => String(key).slice(dayPrefix.length))
-          );
-
-          for (let index = 0; index < autoPositive; index += 1) {
-            const scenarioCursorRef = { value: scenarioCursor };
-            const trade = buildTradeByPriority({
-              wantPositive: true, pool, scenarios, signalRules, scenarioCursorRef,
-              reserved: attemptUsed, reservedTimes: attemptTimes, reservedMarketValues: dayMarketValues,
-              lotMin, lotMax, pointValue, operationPreference
-            });
-            scenarioCursor = scenarioCursorRef.value;
-
-            if (!trade) {
-              attemptValid = false;
-              break;
-            }
-
-            dayTrades.push(trade);
-          }
-
-          if (!attemptValid) break;
-
-          for (let index = 0; index < autoNegative; index += 1) {
-            const scenarioCursorRef = { value: scenarioCursor };
-            const trade = buildTradeByPriority({
-              wantPositive: false, pool, scenarios, signalRules, scenarioCursorRef,
-              reserved: attemptUsed, reservedTimes: attemptTimes, reservedMarketValues: dayMarketValues,
-              lotMin, lotMax, pointValue, operationPreference
-            });
-            scenarioCursor = scenarioCursorRef.value;
-
-            if (!trade) {
-              attemptValid = false;
-              break;
-            }
-
-            dayTrades.push(trade);
-          }
-
-          if (!attemptValid) break;
-
-          const dayPositive = dayTrades.filter(t => Number(t.profit) > 0).length;
-          const dayNegative = dayTrades.filter(t => Number(t.profit) < 0).length;
-
-          if (
-            dayTrades.length !== requiredPerDay ||
-            dayPositive !== autoPositive ||
-            dayNegative !== autoNegative
-          ) {
-            attemptValid = false;
-            break;
-          }
-
-          // Il profitto min/max si applica a CIASCUN giorno, non alla settimana.
-          const dayProfit = Number(dayTrades.reduce(
-            (sum, trade) => sum + Number(trade.profit || 0), 0
-          ).toFixed(2));
-          if (dayProfit < profitMin || dayProfit > profitMax) {
-            attemptValid = false;
-            break;
-          }
-
-          trades.push(...dayTrades);
-        }
-
-        if (!attemptValid) continue;
-
-        const expectedTrades = validGroups.length * requiredPerDay;
-        const positiveCount = trades.filter(t => Number(t.profit) > 0).length;
-        const negativeCount = trades.filter(t => Number(t.profit) < 0).length;
-
-        if (
-          trades.length !== expectedTrades ||
-          positiveCount !== validGroups.length * autoPositive ||
-          negativeCount !== validGroups.length * autoNegative
-        ) {
-          continue;
-        }
-
-        // Opzionale: aggiunge UNA sola operazione del giorno precedente.
-        // Non modifica il conteggio richiesto di positive/negative dell'ultimo giorno.
-        if (includePreviousDayTrade) {
-          if (!previousDayPool) continue;
-
-          const previousTrade = buildPreviousDayTrade({
-            previousGroup: previousDayPool,
-            latestGroup: validGroups[0],
-            signalRules,
-            operationPreference,
-            reserved: attemptUsed,
-            reservedTimes: attemptTimes,
-            confirmedMarketValues,
-            lotMin,
-            lotMax,
-            pointValue
-          });
-
-          if (!previousTrade) continue;
-          trades.push(previousTrade);
-        }
-
-        trades.sort(
-          (a, b) => new Date(a.closeTime).getTime() - new Date(b.closeTime).getTime()
-        );
-
-        // Ogni giornata è già stata verificata individualmente sopra.
-        // L'operazione overnight rimane aggiuntiva, fuori dal limite giornaliero.
-        {
-          best = trades;
-          for (const key of attemptUsed) confirmedUsed.add(key);
-
-          // Salva complessivamente entrate + uscite per giorno.
-          for (const trade of trades) {
-            const group = validGroups.find(g =>
-              Array.isArray(g?.candles) &&
-              g.candles.some(c => c?.id === trade.openCandleId)
-            );
-            if (!group?.day) continue;
-            confirmedMarketValues.add(`${group.day}|${marketValueKey(trade.entry)}`);
-            confirmedMarketValues.add(`${group.day}|${marketValueKey(trade.exit)}`);
-          }
-
-          break;
-        }
-      }
-
-      if (best) {
-        sets.push({
-          name: `screen_${String(screenIndex + 1).padStart(2, "0")}`,
-          trades: best
-        });
-      }
-    }
-
-    return NextResponse.json({
-      sets,
-      usedCandleKeys: Array.from(confirmedUsed),
-      usedMarketValueKeys: Array.from(confirmedMarketValues),
-      partial: sets.length < screenCount,
-      message: sets.length
-        ? null
-        : `Nessuna combinazione completa trovata. Il generatore accetta solo screen con ESATTAMENTE ${autoPositive} positive e ${autoNegative} negative per giorno, con almeno ${MIN_OPERATION_GAP_MINUTES} minuti di distanza. Se non riesce, non restituisce risultati parziali.`
-    });
-  } catch (error) {
-    console.error("Backend generation error:", error);
-    return NextResponse.json(
-      { error: "Errore interno durante la generazione delle operazioni." },
-      { status: 500 }
-    );
-  }
 }
