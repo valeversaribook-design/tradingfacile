@@ -4,6 +4,7 @@ export const runtime = "nodejs";
 export const maxDuration = 30;
 
 const MAX_SCREEN_ATTEMPTS = 180;
+const DAY_REQUEST_BUDGET_MS = 9000;
 const MAX_TRADE_ATTEMPTS = 520;
 
 // Evita operazioni troppo ravvicinate tra loro.
@@ -414,6 +415,7 @@ export async function POST(request) {
     const previousDayPool = body?.previousDayPool && Array.isArray(body.previousDayPool.candles)
       ? body.previousDayPool
       : null;
+    const dailyCandidateMode = body?.mode === "dailyCandidates";
     const settings = body?.settings || {};
     const screenCount = Math.max(1, Math.min(50, Number(settings.screenCount || 1)));
     const autoPositive = Math.max(0, Math.min(50, Number(settings.autoPositive || 0)));
@@ -448,11 +450,14 @@ export async function POST(request) {
     );
 
     const sets = [];
+    const deadline = Date.now() + DAY_REQUEST_BUDGET_MS;
 
     for (let screenIndex = 0; screenIndex < screenCount; screenIndex += 1) {
+      if (dailyCandidateMode && Date.now() >= deadline) break;
       let best = null;
 
-      for (let attempt = 0; attempt < MAX_SCREEN_ATTEMPTS; attempt += 1) {
+      for (let attempt = 0; attempt < (dailyCandidateMode ? 8 : MAX_SCREEN_ATTEMPTS); attempt += 1) {
+        if (dailyCandidateMode && Date.now() >= deadline) break;
         const trades = [];
         const attemptUsed = new Set(confirmedUsed);
         const attemptTimes = new Set();
@@ -578,7 +583,7 @@ export async function POST(request) {
           : trades;
         const totalForGeneration = normalDayTrades.reduce((sum, trade) => sum + Number(trade.profit || 0), 0);
 
-        if (totalForGeneration >= profitMin && totalForGeneration <= profitMax) {
+        if (dailyCandidateMode || (totalForGeneration >= profitMin && totalForGeneration <= profitMax)) {
           best = trades;
           for (const key of attemptUsed) confirmedUsed.add(key);
 
