@@ -4,7 +4,8 @@ export const runtime = "nodejs";
 export const maxDuration = 30;
 
 const MAX_SCREEN_ATTEMPTS = 180;
-const DAY_REQUEST_BUDGET_MS = 9000;
+const DAY_REQUEST_BUDGET_MS = 6500;
+const BUILD_ID = "fix-20261010-json-v3";
 const MAX_TRADE_ATTEMPTS = 520;
 
 // Evita operazioni troppo ravvicinate tra loro.
@@ -89,6 +90,7 @@ function interiorPrice(candle, bounds = null) {
 
 
 function stopLossHit(candle, side, stopLoss) {
+  if (stopLoss == null || stopLoss === "") return false;
   const sl = Number(stopLoss);
   if (!Number.isFinite(sl)) return false;
   const high = Number(candle?.high);
@@ -147,7 +149,8 @@ function buildTrade({
   reservedMarketValues,
   lotMin,
   lotMax,
-  pointValue
+  pointValue,
+  deadline = Infinity
 }) {
   const available = pool.filter(candle => !reserved.has(signature(candle)));
   if (available.length < 2) return null;
@@ -155,6 +158,7 @@ function buildTrade({
   const bounds = scenarioBounds(scenario);
 
   for (let attempt = 0; attempt < MAX_TRADE_ATTEMPTS; attempt += 1) {
+    if ((attempt & 7) === 0 && Date.now() >= deadline) return null;
     // Scegliamo una candela di apertura casuale, non "la più vicina" al numero
     // dello scenario: lo scenario è solo il recinto entro cui devono stare i prezzi.
     const openIndex = randInt(0, available.length - 2);
@@ -194,6 +198,7 @@ function buildTrade({
       : (activeSignal?.side ? String(activeSignal.side).toLowerCase() : null);
 
     for (let i = openIndex + 1; i < available.length; i += 1) {
+      if ((i & 63) === 0 && Date.now() >= deadline) return null;
       const candle = available[i];
       const closeMs = new Date(candle.time).getTime();
       if (!Number.isFinite(closeMs)) continue;
@@ -264,16 +269,16 @@ function buildTrade({
 }
 
 
-function buildTradeByPriority({ wantPositive, pool, scenarios, signalRules, scenarioCursorRef, reserved, reservedTimes, reservedMarketValues, lotMin, lotMax, pointValue, operationPreference }) {
-  let trade = buildTrade({ wantPositive, pool, scenario:null, signalRules, sourceMode:"signals", operationPreference, reserved, reservedTimes, reservedMarketValues, lotMin, lotMax, pointValue });
+function buildTradeByPriority({ wantPositive, pool, scenarios, signalRules, scenarioCursorRef, reserved, reservedTimes, reservedMarketValues, lotMin, lotMax, pointValue, operationPreference, deadline = Infinity }) {
+  let trade = buildTrade({ wantPositive, pool, scenario:null, signalRules, sourceMode:"signals", operationPreference, reserved, reservedTimes, reservedMarketValues, lotMin, lotMax, pointValue, deadline });
   if (trade) return trade;
   const usable=(Array.isArray(scenarios)?scenarios:[]).filter(x => (x?.side && x.side!=="auto") || Number.isFinite(Number(x?.open)) || Number.isFinite(Number(x?.close)));
   for (let i=0;i<usable.length;i++) {
     const scenario=usable[scenarioCursorRef.value++ % usable.length];
-    trade=buildTrade({ wantPositive, pool, scenario, signalRules:[], sourceMode:"scenario", operationPreference, reserved, reservedTimes, reservedMarketValues, lotMin, lotMax, pointValue });
+    trade=buildTrade({ wantPositive, pool, scenario, signalRules:[], sourceMode:"scenario", operationPreference, reserved, reservedTimes, reservedMarketValues, lotMin, lotMax, pointValue, deadline });
     if (trade) return trade;
   }
-  return buildTrade({ wantPositive, pool, scenario:null, signalRules:[], sourceMode:"auto", operationPreference, reserved, reservedTimes, reservedMarketValues, lotMin, lotMax, pointValue });
+  return buildTrade({ wantPositive, pool, scenario:null, signalRules:[], sourceMode:"auto", operationPreference, reserved, reservedTimes, reservedMarketValues, lotMin, lotMax, pointValue, deadline });
 }
 
 function buildPreviousDayTrade({
@@ -417,7 +422,7 @@ export async function POST(request) {
       : null;
     const dailyCandidateMode = body?.mode === "dailyCandidates";
     const settings = body?.settings || {};
-    const screenCount = Math.max(1, Math.min(50, Number(settings.screenCount || 1)));
+    const screenCount = Math.max(1, Math.min(dailyCandidateMode ? 3 : 50, Number(settings.screenCount || 1)));
     const autoPositive = Math.max(0, Math.min(50, Number(settings.autoPositive || 0)));
     const autoNegative = Math.max(0, Math.min(50, Number(settings.autoNegative || 0)));
     const profitMin = Number(settings.profitMin);
@@ -456,7 +461,7 @@ export async function POST(request) {
       if (dailyCandidateMode && Date.now() >= deadline) break;
       let best = null;
 
-      for (let attempt = 0; attempt < (dailyCandidateMode ? 8 : MAX_SCREEN_ATTEMPTS); attempt += 1) {
+      for (let attempt = 0; attempt < (dailyCandidateMode ? 3 : MAX_SCREEN_ATTEMPTS); attempt += 1) {
         if (dailyCandidateMode && Date.now() >= deadline) break;
         const trades = [];
         const attemptUsed = new Set(confirmedUsed);
@@ -490,7 +495,7 @@ export async function POST(request) {
             const trade = buildTradeByPriority({
               wantPositive: true, pool, scenarios, signalRules, scenarioCursorRef,
               reserved: attemptUsed, reservedTimes: attemptTimes, reservedMarketValues: dayMarketValues,
-              lotMin, lotMax, pointValue, operationPreference
+              lotMin, lotMax, pointValue, operationPreference, deadline
             });
             scenarioCursor = scenarioCursorRef.value;
 
@@ -509,7 +514,7 @@ export async function POST(request) {
             const trade = buildTradeByPriority({
               wantPositive: false, pool, scenarios, signalRules, scenarioCursorRef,
               reserved: attemptUsed, reservedTimes: attemptTimes, reservedMarketValues: dayMarketValues,
-              lotMin, lotMax, pointValue, operationPreference
+              lotMin, lotMax, pointValue, operationPreference, deadline
             });
             scenarioCursor = scenarioCursorRef.value;
 
@@ -611,6 +616,7 @@ export async function POST(request) {
     }
 
     return NextResponse.json({
+      buildId: BUILD_ID,
       sets,
       usedCandleKeys: Array.from(confirmedUsed),
       usedMarketValueKeys: Array.from(confirmedMarketValues),
