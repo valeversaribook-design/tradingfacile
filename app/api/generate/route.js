@@ -530,6 +530,15 @@ export async function POST(request) {
             break;
           }
 
+          // Il profitto min/max si applica a CIASCUN giorno, non alla settimana.
+          const dayProfit = Number(dayTrades.reduce(
+            (sum, trade) => sum + Number(trade.profit || 0), 0
+          ).toFixed(2));
+          if (dayProfit < profitMin || dayProfit > profitMax) {
+            attemptValid = false;
+            break;
+          }
+
           trades.push(...dayTrades);
         }
 
@@ -573,12 +582,9 @@ export async function POST(request) {
           (a, b) => new Date(a.closeTime).getTime() - new Date(b.closeTime).getTime()
         );
 
-        const normalDayTrades = includePreviousDayTrade
-          ? trades.filter(t => !t.carriedFromPreviousDay)
-          : trades;
-        const totalForGeneration = normalDayTrades.reduce((sum, trade) => sum + Number(trade.profit || 0), 0);
-
-        if (totalForGeneration >= profitMin && totalForGeneration <= profitMax) {
+        // Ogni giornata è già stata verificata individualmente sopra.
+        // L'operazione overnight rimane aggiuntiva, fuori dal limite giornaliero.
+        {
           best = trades;
           for (const key of attemptUsed) confirmedUsed.add(key);
 
