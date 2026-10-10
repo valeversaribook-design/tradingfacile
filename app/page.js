@@ -1329,7 +1329,7 @@ export default function LucaTradingAuto() {
       const common = {
         scenarios: scenarios(), signalRules, operationPreference,
         settings: {
-          screenCount: 6, autoPositive: Number(autoPositive || 0),
+          screenCount: 3, autoPositive: Number(autoPositive || 0),
           autoNegative: Number(autoNegative || 0), profitMin: targetMin,
           profitMax: targetMax, lotMin: Number(lotMin), lotMax: Number(lotMax),
           pointValue: Number(pointValue)
@@ -1344,8 +1344,10 @@ export default function LucaTradingAuto() {
         let data;
         try { data = JSON.parse(raw); }
         catch {
-          throw new Error(`Risposta server non valida (HTTP ${response.status}). ` +
-            (response.status >= 500 ? "Possibile timeout Vercel." : raw.slice(0, 120)));
+          const excerpt = raw.replace(/<[^>]*>/g, " ").replace(/\\s+/g, " ").trim().slice(0, 180);
+          throw new Error(`Backend non ha restituito JSON (HTTP ${response.status}). ` +
+            (response.status >= 500 ? "Probabile errore o timeout della funzione Vercel. " : "") +
+            excerpt);
         }
         if (!response.ok) throw new Error(data?.error || `Errore HTTP ${response.status}`);
         return data;
@@ -1557,7 +1559,7 @@ export default function LucaTradingAuto() {
     <main className="page">
       <header className="top">
         <div>
-          <h1>🥇 Luca Trading Definitivo</h1>
+          <h1>🥇 Luca Trading Definitivo <small style={{fontSize:12,opacity:.65}}>fix JSON v3</small></h1>
           <p>1) Settaggi sopra · 2) Operazioni sotto · 3) Screenshot finale.</p>
         </div>
         <button className="primary" onClick={screenshot}>Scarica screenshot</button>
