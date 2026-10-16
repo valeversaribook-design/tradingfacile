@@ -1035,6 +1035,8 @@ export default function LucaTradingAuto() {
   const [signalStart,setSignalStart]=useState("");
   const [signalEnd,setSignalEnd]=useState("");
   const [signalRules,setSignalRules]=useState([]);
+  const [closingSignalId,setClosingSignalId]=useState(null);
+  const [closingSignalTime,setClosingSignalTime]=useState("");
   const [includePreviousDayTrade, setIncludePreviousDayTrade] = useState(false);
   const [operationPreference, setOperationPreference] = useState("auto");
 
@@ -1228,8 +1230,19 @@ export default function LucaTradingAuto() {
     const next=[...signalRules,rule].sort((a,b)=>new Date(a.start)-new Date(b.start)); setSignalRules(next);saveSignalRules(next);
     setSignalText("");setSignalStart("");setSignalEnd("");
   }
-  function stopSignalRule(id){
-    const next=signalRules.map(r=>r.id===id&&!r.end?{...r,end:new Date().toISOString()}:r);setSignalRules(next);saveSignalRules(next);
+  function closeSignalRule(id){
+    const rule=signalRules.find(r=>r.id===id);
+    if(!rule)return;
+    if(!closingSignalTime)return alert("Inserisci data e ora di chiusura.");
+    const end=new Date(closingSignalTime);
+    const start=new Date(rule.start);
+    if(Number.isNaN(end.getTime()))return alert("Data e ora di chiusura non valide.");
+    if(end<=start)return alert("La chiusura deve essere successiva all'inizio del segnale.");
+    const next=signalRules.map(r=>r.id===id?{...r,end:end.toISOString()}:r);
+    setSignalRules(next);
+    saveSignalRules(next);
+    setClosingSignalId(null);
+    setClosingSignalTime("");
   }
   function removeSignalRule(id){const next=signalRules.filter(r=>r.id!==id);setSignalRules(next);saveSignalRules(next);}
 
@@ -1717,7 +1730,19 @@ export default function LucaTradingAuto() {
           {signalRules.map(r=><div key={r.id} style={{border:"1px solid #29415b",borderRadius:"10px",padding:"12px",marginTop:"10px"}}>
             <b>{r.side.toUpperCase()} · Entry {price(r.entryMin)} - {price(r.entryMax)}</b>
             <div className="hint">{itDate(new Date(r.start),false)} → {r.end?itDate(new Date(r.end),false):"IN CORSO"}</div>
-            <div className="actions">{!r.end&&<button type="button" onClick={()=>stopSignalRule(r.id)}>Stop adesso</button>}<button type="button" onClick={()=>removeSignalRule(r.id)}>Elimina</button></div>
+            <div className="actions">
+              {!r.end&&<button type="button" onClick={()=>{setClosingSignalId(closingSignalId===r.id?null:r.id);setClosingSignalTime("");}}>Chiudi</button>}
+              <button type="button" onClick={()=>removeSignalRule(r.id)}>Elimina</button>
+            </div>
+            {!r.end&&closingSignalId===r.id&&(
+              <div style={{marginTop:"10px",display:"flex",gap:"10px",alignItems:"end",flexWrap:"wrap"}}>
+                <label>Data e ora di chiusura
+                  <input type="datetime-local" value={closingSignalTime} onChange={e=>setClosingSignalTime(e.target.value)}/>
+                </label>
+                <button type="button" onClick={()=>closeSignalRule(r.id)}>Conferma chiusura</button>
+                <button type="button" onClick={()=>{setClosingSignalId(null);setClosingSignalTime("");}}>Annulla</button>
+              </div>
+            )}
           </div>)}
       </section>
 
