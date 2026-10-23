@@ -415,6 +415,9 @@ export async function POST(request) {
   try {
     const body = await request.json();
     const pools = Array.isArray(body?.pools) ? body.pools : [];
+    if (body?.mode === "dailyCandidates" && pools.length !== 1) {
+      return NextResponse.json({error:"La richiesta giornaliera deve contenere un solo giorno."},{status:400});
+    }
     const scenarios = Array.isArray(body?.scenarios) && body.scenarios.length
       ? body.scenarios
       : [{ side: "auto", open: null, close: null }];
@@ -474,8 +477,13 @@ export async function POST(request) {
         confirmedMarketValues: usedValues, lotMin, lotMax, pointValue,
         deadline: Date.now() + DAY_REQUEST_BUDGET_MS
       });
+      const validOvernight = trade &&
+        new Date(trade.openTime).getTime() < new Date(trade.closeTime).getTime() &&
+        String(previousDayPool.day) !== String(pools[0].day) &&
+        new Intl.DateTimeFormat("en-CA", {timeZone:"Europe/Rome", year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date(trade.openTime)) === String(previousDayPool.day) &&
+        new Intl.DateTimeFormat("en-CA", {timeZone:"Europe/Rome", year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date(trade.closeTime)) === String(pools[0].day);
       return NextResponse.json({
-        buildId: BUILD_ID, sets: trade ? [{name:"overnight",trades:[trade]}] : [],
+        buildId: BUILD_ID, sets: validOvernight ? [{name:"overnight",trades:[trade]}] : [],
         message: trade ? null : "Nessuna operazione overnight compatibile trovata.",
         usedCandleKeys: Array.from(reserved), usedMarketValueKeys: Array.from(usedValues)
       });
