@@ -1280,7 +1280,14 @@ export default function LucaTradingAuto() {
     if (isGenerating) return;
 
     // Tutti i giorni selezionati sono generati separatamente.
-    const daysToGenerate = selectedDayKeys.length ? [...selectedDayKeys].sort() : [...allCsvDays];
+    // Con il flag attivo: una sola operazione speciale apre il penultimo giorno
+    // e chiude l'ultimo. Le operazioni normali vengono create SOLO nell'ultimo.
+    const daysToGenerate = includePreviousDayTrade
+      ? [latestCsvDay]
+      : (selectedDayKeys.length ? [...selectedDayKeys].sort() : [...allCsvDays]);
+    if (includePreviousDayTrade && !selectedDayKeys.includes(latestCsvDay)) {
+      return alert("Per l'operazione del giorno precedente seleziona anche l'ultimo giorno del CSV.");
+    }
     const pools = daysToGenerate.map(day => ({
       day,
       candles: validTimePool(day).map(c => ({
@@ -1298,6 +1305,9 @@ export default function LucaTradingAuto() {
     if (includePreviousDayTrade) {
       if (!previousCsvDay) {
         return alert("Per usare l'operazione del giorno precedente il CSV deve contenere almeno due giorni.");
+      }
+      if (selectedDayKeys.length && !selectedDayKeys.includes(previousCsvDay)) {
+        return alert("Seleziona anche il giorno precedente nel periodo, per usare il segnale overnight.");
       }
 
       const previousCandles = candles
@@ -1396,20 +1406,31 @@ export default function LucaTradingAuto() {
           throw new Error(`Nessuna combinazione valida per ${group.day}. ` +
             "I giorni gia' elaborati non sono stati salvati come risultati completi.");
         }
-        candidateGroups.push(dayResult.sets.map(s => s.trades));
+        // Sicurezza: il flag overnight non deve MAI aggiungere operazioni normali
+        // del giorno precedente, anche se il backend o il browser sono fuori sincrono.
+        const normalizedOptions = dayResult.sets.map(s => s.trades).filter(option =>
+          Array.isArray(option) &&
+          option.length === Number(autoPositive || 0) + Number(autoNegative || 0) &&
+          option.every(t => dayKey(new Date(t.openTime)) === group.day &&
+                            dayKey(new Date(t.closeTime)) === group.day)
+        );
+        if (!normalizedOptions.length) throw new Error(`Il backend ha restituito operazioni fuori giornata per ${group.day}.`);
+        candidateGroups.push(normalizedOptions);
       }
-      // Ricerca di combinazioni su tutta la settimana (non per giorno).
-      // Beam search: conserva piu' alternative per non fissare prematuramente un giorno.
-      let combinations = [{ trades: [], profit: 0 }];
+      // Il target include SEMPRE il risultato dell'operazione overnight.
+      // Il conteggio positive/negative per giorno resta riferito alle sole operazioni normali.
+      const overnightProfit = overnightTrade ? Number(overnightTrade.profit || 0) : 0;
+      const totalNormalTrades = pools.length * (Number(autoPositive || 0) + Number(autoNegative || 0));
+      const targetMid = (targetMin + targetMax) / 2;
+      let combinations = [{ trades: [], profit: overnightProfit }];
       for (const group of candidateGroups) {
         const expanded = [];
         for (const combo of combinations) for (const option of group) {
           const profit = combo.profit + option.reduce((s,t) => s + Number(t.profit || 0), 0);
           expanded.push({ trades: [...combo.trades, ...option], profit });
         }
-        const expectedAtStage = (targetMin + targetMax) / 2 *
-          (expanded[0]?.trades.length / Math.max(1, pools.length *
-            (Number(autoPositive || 0) + Number(autoNegative || 0))));
+        const completedFraction = expanded[0]?.trades.length / Math.max(1, totalNormalTrades);
+        const expectedAtStage = overnightProfit + (targetMid - overnightProfit) * completedFraction;
         expanded.sort((a,b) => Math.abs(a.profit-expectedAtStage)-Math.abs(b.profit-expectedAtStage));
         combinations = expanded.slice(0, 120);
       }
@@ -1417,10 +1438,26 @@ export default function LucaTradingAuto() {
       combinations.sort((a,b) => distance(a.profit)-distance(b.profit));
       const chosen = combinations.slice(0, requestedScreens);
       if (!chosen.length) throw new Error("Nessuna combinazione settimanale disponibile.");
-      // Aggiunta speciale, separata dal target di profitto e dal conteggio per giorno.
+      // L'overnight e' gia' inclusa nel profitto usato per scegliere le combinazioni.
+      // Viene aggiunta alle righe senza cambiare il conteggio positivo/negativo giornaliero.
       if (overnightTrade) for (const combo of chosen) {
         combo.trades = [...combo.trades, overnightTrade].sort(
           (a,b) => new Date(a.closeTime) - new Date(b.closeTime));
+      }
+      if (includePreviousDayTrade) {
+        const expected = Number(autoPositive || 0) + Number(autoNegative || 0) + 1;
+        for (const combo of chosen) {
+          const overnight = combo.trades.filter(t =>
+            dayKey(new Date(t.openTime)) === previousCsvDay &&
+            dayKey(new Date(t.closeTime)) === latestCsvDay);
+          const normal = combo.trades.filter(t =>
+            dayKey(new Date(t.openTime)) === latestCsvDay &&
+            dayKey(new Date(t.closeTime)) === latestCsvDay);
+          if (combo.trades.length !== expected || overnight.length !== 1 ||
+              normal.length !== expected - 1) {
+            throw new Error(`Controllo overnight non superato: attese 1 operazione ${previousCsvDay}→${latestCsvDay} e ${expected-1} operazioni solo ${latestCsvDay}. Nessun risultato errato salvato.`);
+          }
+        }
       }
       const result = {
         sets: chosen.map((c,i) => ({
@@ -1591,7 +1628,7 @@ export default function LucaTradingAuto() {
     <main className="page">
       <header className="top">
         <div>
-          <h1>🥇 Luca Trading Definitivo <small style={{fontSize:12,opacity:.65}}>fix JSON v3</small></h1>
+          <h1>🥇 Luca Trading Definitivo <small style={{fontSize:12,opacity:.65}}>overnight totale v3</small></h1>
           <p>1) Settaggi sopra · 2) Operazioni sotto · 3) Screenshot finale.</p>
         </div>
         <button className="primary" onClick={screenshot}>Scarica screenshot</button>
