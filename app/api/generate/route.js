@@ -133,7 +133,7 @@ function signalRulesForTime(rules, timeMs, operationPreference = "auto") {
     .sort(() => Math.random() - 0.5);
 }
 function signalExitBounds(r){
- if(!r)return null; const vals=[Number(r.entryMin),Number(r.entryMax),Number(r.sl),...(Array.isArray(r.tps)?r.tps.map(Number):[])].filter(Number.isFinite);
+ if(!r)return null; const vals=[Number(r.entryMin),Number(r.entryMax),...(r.sl == null ? [] : [Number(r.sl)]),...(Array.isArray(r.tps)?r.tps.map(Number):[])].filter(Number.isFinite);
  return vals.length?{min:Math.min(...vals),max:Math.max(...vals)}:null;
 }
 
@@ -291,7 +291,8 @@ function buildPreviousDayTrade({
   confirmedMarketValues,
   lotMin,
   lotMax,
-  pointValue
+  pointValue,
+  deadline = Infinity
 }) {
   if (!previousGroup?.day || !latestGroup?.day) return null;
   if (!Array.isArray(previousGroup.candles) || !Array.isArray(latestGroup.candles)) return null;
@@ -321,6 +322,7 @@ function buildPreviousDayTrade({
   if (!opens.length || !closes.length) return null;
 
   for (let attempt = 0; attempt < MAX_TRADE_ATTEMPTS; attempt += 1) {
+    if (Date.now() >= deadline) return null;
     const openCandle = choose(opens);
     const openMs = new Date(openCandle.time).getTime();
     if (!Number.isFinite(openMs) || !isTimeFarEnough(openMs, reservedTimes)) continue;
@@ -351,8 +353,13 @@ function buildPreviousDayTrade({
       : String(activeSignal.side).toLowerCase();
     const exitCandidates = [];
     let forcedStop = null;
+    // Lo SL deve essere controllato anche nel giorno di apertura.
+    const openPosition = opens.findIndex(c => c.id === openCandle.id);
+    const laterPrevious = opens.slice(openPosition + 1);
+    if (laterPrevious.some(c => stopLossHit(c, side, activeSignal.sl))) continue;
 
     for (const closeCandle of closes) {
+      if (Date.now() >= deadline) return null;
       const closeMs = new Date(closeCandle.time).getTime();
       if (!Number.isFinite(closeMs) || closeMs <= openMs) continue;
       if (!isTimeFarEnough(closeMs, reservedTimes)) continue;
@@ -421,6 +428,7 @@ export async function POST(request) {
       ? body.previousDayPool
       : null;
     const dailyCandidateMode = body?.mode === "dailyCandidates";
+    const overnightMode = body?.mode === "overnight";
     const settings = body?.settings || {};
     const screenCount = Math.max(1, Math.min(dailyCandidateMode ? 3 : 50, Number(settings.screenCount || 1)));
     const autoPositive = Math.max(0, Math.min(50, Number(settings.autoPositive || 0)));
@@ -454,6 +462,24 @@ export async function POST(request) {
       Array.isArray(body?.usedMarketValueKeys) ? body.usedMarketValueKeys : []
     );
 
+    if (overnightMode) {
+      if (!previousDayPool || !pools[0]?.candles?.length) return NextResponse.json(
+        {error:"Servono le candele del giorno precedente e di chiusura."}, {status:400});
+      const reserved = new Set(confirmedUsed);
+      const reservedTimes = new Set();
+      const usedValues = new Set(confirmedMarketValues);
+      const trade = buildPreviousDayTrade({
+        previousGroup: previousDayPool, latestGroup: pools[0], signalRules,
+        operationPreference, reserved, reservedTimes,
+        confirmedMarketValues: usedValues, lotMin, lotMax, pointValue,
+        deadline: Date.now() + DAY_REQUEST_BUDGET_MS
+      });
+      return NextResponse.json({
+        buildId: BUILD_ID, sets: trade ? [{name:"overnight",trades:[trade]}] : [],
+        message: trade ? null : "Nessuna operazione overnight compatibile trovata.",
+        usedCandleKeys: Array.from(reserved), usedMarketValueKeys: Array.from(usedValues)
+      });
+    }
     const sets = [];
     const deadline = Date.now() + DAY_REQUEST_BUDGET_MS;
 
