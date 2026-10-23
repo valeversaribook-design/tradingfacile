@@ -294,7 +294,7 @@ function parseSignalText(text){
  return {side:side[1].toLowerCase(),entryMin:Math.min(a,b),entryMax:Math.max(a,b),sl:sl?n(sl[1]):null,tps:tps.map(x=>n(x[1])).filter(Number.isFinite)};
 }
 
-function renderLucaLayoutBlob(trades, layout, tab, deposit, credit, withdrawal) {
+function renderLucaLayoutBlob(trades, layout, tab, deposit, credit, withdrawal, visiblePageTrades = null) {
   const isAndroid = layout.startsWith("luca_android");
   const isIOS = layout.startsWith("luca_ios");
   const isDark = layout.endsWith("dark");
@@ -307,7 +307,7 @@ function renderLucaLayoutBlob(trades, layout, tab, deposit, credit, withdrawal) 
 
   // Solo la parte grafica viene limitata alle ultime 9 operazioni.
   const orderedAll = [...allPeriodTrades].sort((a, b) => new Date(a.closeTime) - new Date(b.closeTime));
-  const ordered = (tab === "Day" || tab === "Week") ? orderedAll.slice(-9) : orderedAll;
+  const ordered = visiblePageTrades !== null ? visiblePageTrades : ((tab === "Day" || tab === "Week") ? orderedAll.slice(-9) : orderedAll);
   const depositValue = Number(deposit || 0);
   const creditValue = Number(credit || 0);
   const withdrawalValue = Number(withdrawal || 0);
@@ -711,9 +711,9 @@ function renderLucaLayoutBlob(trades, layout, tab, deposit, credit, withdrawal) 
   return new Promise(resolve => canvas.toBlob(resolve, "image/png"));
 }
 
-function renderReportBlob(trades, layout, tab, deposit, credit, withdrawal) {
+function renderReportBlob(trades, layout, tab, deposit, credit, withdrawal, visiblePageTrades = null) {
   if (layout.startsWith("luca_android") || layout.startsWith("luca_ios")) {
-    return renderLucaLayoutBlob(trades, layout, tab, deposit, credit, withdrawal);
+    return renderLucaLayoutBlob(trades, layout, tab, deposit, credit, withdrawal, visiblePageTrades);
   }
 
   const totalProfit = trades.reduce((a, t) => a + Number(t.profit || 0), 0);
@@ -1562,31 +1562,58 @@ export default function LucaTradingAuto() {
     }).sort((a, b) => new Date(a.closeTime).getTime() - new Date(b.closeTime).getTime()));
   }
 
+  // Pagine da massimo 9 operazioni. Ogni pagina mostra il totale progressivo
+  // di tutte le operazioni fino alla pagina corrente, non soltanto delle 9 visibili.
+  async function downloadPagedReports(allTrades, filename = "luca_trading_pagine.zip") {
+    const ordered = [...allTrades].sort((a,b) =>
+      new Date(a.closeTime).getTime() - new Date(b.closeTime).getTime());
+    if (!ordered.length) return alert("Non ci sono operazioni da esportare.");
+    const zip = new JSZip();
+    const csv = ["pagina,tipo,lotto,apertura,prezzo_apertura,chiusura,prezzo_chiusura,profitto"];
+    const totalPages = Math.ceil(ordered.length / 9);
+    for (let index = 0; index < totalPages; index++) {
+      const from = index * 9;
+      const visible = ordered.slice(from, from + 9);
+      const blob = await renderReportBlob(ordered, layout, tab, deposit, credit, withdrawal, visible);
+      if (!blob) throw new Error("Impossibile creare lo screenshot.");
+      const name = `screen_${String(index+1).padStart(2,"0")}.png`;
+      zip.file(name, blob);
+      for (const t of visible) csv.push([
+        index+1,t.side,Number(t.lot).toFixed(2),itDate(t.openTime),
+        price(t.entry),itDate(t.closeTime),price(t.exit),Number(t.profit).toFixed(2)
+      ].join(","));
+    }
+    zip.file("operazioni_generate.csv", csv.join("\\n"));
+    const blob = await zip.generateAsync({type:"blob"});
+    downloadBlob(blob, filename);
+  }
+
   async function screenshot() {
-    if (!trades.length) return alert("Prima genera o aggiungi almeno una operazione.");
+    if (!trades.length) return alert("Prima genera o importa almeno una operazione.");
+    if (trades.length > 9) {
+      await downloadPagedReports(trades, "luca_trading_screenshot_multipli.zip");
+      return;
+    }
     const blob = await renderReportBlob(trades, layout, tab, deposit, credit, withdrawal);
     downloadBlob(blob, "luca_trading_report.png");
   }
 
   async function downloadAutoZip() {
-    if (!autoSets.length) return alert("Genera prima gli screen.");
-    const zip = new JSZip();
-    const rows = ["screen,side,lot,open_time,entry,close_time,exit,profit"];
-
-    for (const set of autoSets) {
-      const orderedSet = [...set.trades].sort(
-        (a, b) => new Date(a.closeTime).getTime() - new Date(b.closeTime).getTime()
-      );
-      const blob = await renderReportBlob(orderedSet, layout, tab, deposit, credit, withdrawal);
-      zip.file(`${set.name}.png`, blob);
-      orderedSet.forEach(t => {
-        rows.push(`${set.name},${t.side},${Number(t.lot).toFixed(2)},${itDate(t.openTime)},${price(t.entry)},${itDate(t.closeTime)},${price(t.exit)},${Number(t.profit).toFixed(2)}`);
-      });
+    if (!autoSets.length && !trades.length) return alert("Genera o importa prima le operazioni.");
+    if (!autoSets.length || autoSets.length === 1) {
+      await downloadPagedReports(trades, "luca_trading_screenshot_multipli.zip");
+      return;
     }
-
-    zip.file("operazioni_generate.csv", rows.join("\n"));
-    const content = await zip.generateAsync({ type: "blob" });
-    downloadBlob(content, "luca_trading_reports.zip");
+    const zip = new JSZip();
+    for (const set of autoSets) {
+      const ordered = [...set.trades].sort((a,b)=>new Date(a.closeTime)-new Date(b.closeTime));
+      for (let i=0; i<ordered.length; i+=9) {
+        const visible = ordered.slice(i,i+9);
+        const blob = await renderReportBlob(ordered,layout,tab,deposit,credit,withdrawal,visible);
+        zip.file(`${set.name}_pagina_${String(Math.floor(i/9)+1).padStart(2,"0")}.png`,blob);
+      }
+    }
+    downloadBlob(await zip.generateAsync({type:"blob"}),"luca_trading_reports.zip");
   }
 
   function estimateOpening(row) {
@@ -1895,7 +1922,7 @@ export default function LucaTradingAuto() {
       <section className="panel final">
         <h2>3. Screenshot</h2>
         <p>Quando le operazioni sono corrette, scarica lo screenshot finale.</p>
-        <button className="primary big" onClick={screenshot}>Scarica screenshot finale</button>
+        <button className="primary big" onClick={screenshot}>Scarica screenshot (multipli se necessari)</button>
       </section>
 
 
