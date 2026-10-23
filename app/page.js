@@ -1273,8 +1273,8 @@ export default function LucaTradingAuto() {
     if (!candles.length) return alert("Carica prima il CSV.");
 
     const allCsvDays = dayOptions.map(d => d.key).sort();
-    const latestCsvDay = allCsvDays.at(-1) || "";
-    const previousCsvDay = allCsvDays.at(-2) || "";
+    const latestCsvDay = (selectedDayKeys.length ? selectedDayKeys : allCsvDays).at(-1) || "";
+    const previousCsvDay = allCsvDays.filter(d => d < latestCsvDay).at(-1) || "";
 
     if (!latestCsvDay) return alert("Nessun giorno disponibile nel CSV.");
     if (isGenerating) return;
@@ -1315,16 +1315,10 @@ export default function LucaTradingAuto() {
         return alert("Nel giorno precedente non ci sono abbastanza candele.");
       }
 
-      const hasPreviousSignal = signalRules.some(rule => {
-        const start = new Date(rule.start);
-        if (Number.isNaN(start.getTime())) return false;
-        const end = rule.end ? new Date(rule.end) : null;
-        return dayKey(start) === previousCsvDay ||
-          (end && !Number.isNaN(end.getTime()) && dayKey(end) === previousCsvDay);
-      });
-
-      if (!hasPreviousSignal) {
-        return alert("Non trovo in memoria un segnale operativo relativo al giorno precedente.");
+      // La compatibilita' del segnale viene verificata sulle candele reali
+      // dal backend: un segnale puo' essere iniziato anche giorni prima.
+      if (!signalRules.length) {
+        return alert("Non ci sono segnali salvati in memoria.");
       }
 
       previousDayPool = { day: previousCsvDay, candles: previousCandles };
@@ -1365,14 +1359,38 @@ export default function LucaTradingAuto() {
         if (!response.ok) throw new Error(data?.error || `Errore HTTP ${response.status}`);
         return data;
       }
+      let overnightTrade = null;
+      if (includePreviousDayTrade) {
+        const latestGroup = pools.find(g => g.day === latestCsvDay);
+        if (!latestGroup) throw new Error("Giorno di chiusura overnight non selezionato.");
+        setGenerationProgress(`Operazione speciale ${previousCsvDay} → ${latestCsvDay}`);
+        const overnightResult = await requestGeneration({
+          ...common, mode: "overnight", pools: [latestGroup], previousDayPool,
+          includePreviousDayTrade: true,
+          usedCandleKeys: Array.from(usedCandleSet),
+          usedMarketValueKeys: Array.from(usedMarketValueSet),
+          settings: {...common.settings, screenCount: 1}
+        });
+        overnightTrade = overnightResult.sets?.[0]?.trades?.[0] || null;
+        if (!overnightTrade) throw new Error(overnightResult.message ||
+          "Nessuna operazione overnight compatibile con segnali, candele e Stop Loss.");
+      }
+      const reservedOvernightCandles = new Set(overnightTrade ? [
+        overnightTrade.openCandleId, overnightTrade.closeCandleId
+      ] : []);
+      const overnightUsedKeys = overnightTrade ? [
+        dayMarketValueKey(dayKey(new Date(overnightTrade.openTime)), overnightTrade.entry),
+        dayMarketValueKey(dayKey(new Date(overnightTrade.closeTime)), overnightTrade.exit)
+      ] : [];
       for (let dayIndex = 0; dayIndex < pools.length; dayIndex++) {
         const group = pools[dayIndex];
         setGenerationProgress(`Giorno ${dayIndex + 1}/${pools.length}: ${group.day}`);
         const dayResult = await requestGeneration({
           ...common, mode: "dailyCandidates", pools: [group],
           includePreviousDayTrade: false,
-          usedCandleKeys: Array.from(usedCandleSet),
-          usedMarketValueKeys: Array.from(usedMarketValueSet)
+          usedCandleKeys: Array.from(new Set([...usedCandleSet,
+            ...candles.filter(c => reservedOvernightCandles.has(c.id)).map(candleSignature)])),
+          usedMarketValueKeys: Array.from(new Set([...usedMarketValueSet, ...overnightUsedKeys]))
         });
         if (!dayResult.sets?.length) {
           throw new Error(`Nessuna combinazione valida per ${group.day}. ` +
@@ -1399,9 +1417,10 @@ export default function LucaTradingAuto() {
       combinations.sort((a,b) => distance(a.profit)-distance(b.profit));
       const chosen = combinations.slice(0, requestedScreens);
       if (!chosen.length) throw new Error("Nessuna combinazione settimanale disponibile.");
-      // L'operazione overnight richiede un controllo separato e non va inventata.
-      if (includePreviousDayTrade) {
-        throw new Error("La modalita' giorno precedente non e' ancora compatibile con la generazione settimanale separata. Disattiva il flag per questa generazione.");
+      // Aggiunta speciale, separata dal target di profitto e dal conteggio per giorno.
+      if (overnightTrade) for (const combo of chosen) {
+        combo.trades = [...combo.trades, overnightTrade].sort(
+          (a,b) => new Date(a.closeTime) - new Date(b.closeTime));
       }
       const result = {
         sets: chosen.map((c,i) => ({
