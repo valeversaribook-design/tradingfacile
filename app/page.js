@@ -1000,7 +1000,7 @@ export default function LucaTradingAuto() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationProgress, setGenerationProgress] = useState("");
 
-  const [layout, setLayout] = useState("ios_mt5_white");
+  const [layout, setLayout] = useState("luca_ios_white");
   const [tab, setTab] = useState("Week");
   const [pointValue, setPointValue] = useState(100);
   const [deposit, setDeposit] = useState(0);
@@ -1039,6 +1039,9 @@ export default function LucaTradingAuto() {
   const [closingSignalTime,setClosingSignalTime]=useState("");
   const [includePreviousDayTrade, setIncludePreviousDayTrade] = useState(false);
   const [operationPreference, setOperationPreference] = useState("auto");
+  const [imageImportRows, setImageImportRows] = useState([]);
+  const [imageImportBusy, setImageImportBusy] = useState(false);
+  const [imageImportStatus, setImageImportStatus] = useState("");
 
 
   const totalProfit = useMemo(() => trades.reduce((a, t) => a + Number(t.profit || 0), 0), [trades]);
@@ -1586,6 +1589,81 @@ export default function LucaTradingAuto() {
     downloadBlob(content, "luca_trading_reports.zip");
   }
 
+  function estimateOpening(row) {
+    // La sola quotazione non identifica un'apertura univoca: scegliamo la
+    // candela compatibile più recente, marcando l'orario come STIMATO.
+    const close = new Date(row.closeTime);
+    const priceIn = Number(row.entry);
+    const matching = candles.filter(c => c.time < close &&
+      c.time >= new Date(close.getTime() - 72 * 3600000) &&
+      Number(c.low) <= priceIn && Number(c.high) >= priceIn);
+    if (!matching.length) return null;
+    return matching[matching.length - 1].time.toISOString();
+  }
+
+  async function loadTradeImages(files) {
+    if (!files?.length) return;
+    if (!candles.length) return alert("Carica prima il CSV XAUUSD: serve per stimare le aperture.");
+    if (files.length > 20) return alert("Carica al massimo 20 immagini per volta.");
+    setImageImportBusy(true);
+    setImageImportStatus("");
+    const all = [];
+    const failures = [];
+    try {
+      for (let i=0; i<files.length; i++) {
+        const file = files[i];
+        setImageImportStatus(`Lettura immagine ${i+1}/${files.length}: ${file.name}`);
+        if (!file.type.startsWith("image/") || file.size > 8_000_000) {
+          failures.push(`${file.name}: formato o dimensione non validi`); continue;
+        }
+        const imageData = await new Promise((resolve,reject)=>{
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = () => reject(new Error("Impossibile leggere immagine"));
+          reader.readAsDataURL(file);
+        });
+        const response = await fetch("/api/import-images", {
+          method:"POST", headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({imageData})
+        });
+        const raw = await response.text();
+        let data;
+        try { data=JSON.parse(raw); } catch { throw new Error(`Servizio immagini non disponibile (HTTP ${response.status}).`); }
+        if (!response.ok) throw new Error(data.error || "Errore riconoscimento immagini");
+        for (const item of data.trades || []) {
+          const candidate = {...item, sourceImage:file.name};
+          candidate.estimatedOpenTime = estimateOpening(candidate);
+          all.push(candidate);
+        }
+      }
+      const unique = new Map();
+      for (const t of all) {
+        const key = [t.side,Number(t.lot).toFixed(2),Number(t.entry).toFixed(2),
+          Number(t.exit).toFixed(2),t.closeTime,Number(t.profit).toFixed(2)].join("|");
+        if (!unique.has(key)) unique.set(key,t);
+      }
+      setImageImportRows([...unique.values()].sort((a,b)=>new Date(a.closeTime)-new Date(b.closeTime)));
+      setImageImportStatus(`${unique.size} operazioni riconosciute. ${failures.join("; ")}`);
+    } catch (e) { alert(e.message || "Errore lettura immagini"); }
+    finally { setImageImportBusy(false); }
+  }
+
+  function confirmImageImport() {
+    if (!imageImportRows.length) return;
+    const unresolved = imageImportRows.filter(t=>!t.estimatedOpenTime);
+    if (unresolved.length) return alert(`${unresolved.length} operazioni senza apertura compatibile nel CSV. Non invento orari: carica un CSV più completo oppure correggi i dati di origine.`);
+    const converted = imageImportRows.map(t=>({
+      side:t.side, lot:Number(t.lot), entry:Number(t.entry), exit:Number(t.exit),
+      openTime:new Date(t.estimatedOpenTime), closeTime:new Date(t.closeTime),
+      profit:Number(t.profit), entrySource:"immagine",exitSource:"immagine",
+      openTimeEstimated:true, sourceImage:t.sourceImage
+    }));
+    // Sostituisce la tabella, non la aggiunge alla generazione precedente.
+    setTrades(converted.sort((a,b)=>a.closeTime-b.closeTime));
+    setAutoSets([{name:"screen_01",trades:converted}]);
+    setImageImportStatus(`Importate ${converted.length} operazioni. Aperture STIMATE dal CSV, non confermate dal broker.`);
+  }
+
   function addBlankTrade() {
     const available = selectedCandles.filter(
       c => !usedCandleSet.has(candleSignature(c))
@@ -1638,7 +1716,7 @@ export default function LucaTradingAuto() {
         <h2>1. Settaggi</h2>
         <div className="grid">
           <label>CSV TradingView/OANDA/Numbers<input type="file" accept=".csv,.txt,.tsv,.numbers" onChange={e => e.target.files?.[0] && loadCSV(e.target.files[0])}/></label>
-          <label>Layout<select value={layout} onChange={e => setLayout(e.target.value)}><option value="ios_mt5_white">iOS MT5 bianco</option><option value="ios_mt5_dark">iOS MT5 nero</option><option value="ios_mt4_white">iOS MT4 bianco</option><option value="ios_mt4_dark">iOS MT4 nero</option><option value="android_mt4_white">Android MT4 bianco</option><option value="android_mt4_dark">Android MT4 nero</option><option value="luca_android_white">LUCA android bianco</option><option value="luca_android_dark">LUCA android nero</option><option value="luca_ios_white">LUCA IOS bianco</option><option value="luca_ios_dark">LUCA IOS nero</option></select></label>
+          <label>Layout<select value={layout} onChange={e => setLayout(e.target.value)}><option value="android_mt4_dark">Android MT4 nero</option><option value="luca_ios_white">LUCA iOS bianco</option><option value="luca_ios_dark">LUCA iOS nero</option></select></label>
           <label>Periodo nello screen<select value={tab} onChange={e => setTab(e.target.value)}><option value="Day">Giorno</option><option value="Week">Settimana</option><option value="Month">Mese</option><option value="Custom">Personalizzato</option></select></label>
           <label>Valore punto 1 lotto<input type="number" value={pointValue} onChange={e => setPointValue(e.target.value)}/></label>
           <label>Deposit<input type="number" value={deposit} onChange={e => setDeposit(e.target.value)}/></label>
@@ -1800,6 +1878,18 @@ export default function LucaTradingAuto() {
               </div>
             )}
           </div>)}
+      </section>
+
+      <section className="panel">
+        <h2>Importa operazioni da immagini</h2>
+        <p className="hint">Carica fino a 20 screenshot Android MT4 nero o LUCA iOS bianco/nero. I dati estratti sono da verificare. L'ora di apertura non è visibile: viene stimata dal CSV, mai presentata come certa.</p>
+        <input type="file" accept="image/png,image/jpeg,image/webp" multiple disabled={imageImportBusy} onChange={e=>loadTradeImages(Array.from(e.target.files || []))}/>
+        {imageImportStatus && <p role="status">{imageImportStatus}</p>}
+        {imageImportRows.length>0 && <>
+          <div style={{overflowX:"auto"}}><table><thead><tr><th>Tipo</th><th>Lotto</th><th>Entrata</th><th>Uscita</th><th>Chiusura</th><th>P/L</th><th>Apertura stimata</th></tr></thead>
+          <tbody>{imageImportRows.map((t,i)=><tr key={i}><td>{t.side.toUpperCase()}</td><td>{Number(t.lot).toFixed(2)}</td><td>{price(t.entry)}</td><td>{price(t.exit)}</td><td>{itDate(new Date(t.closeTime))}</td><td>{money(t.profit)}</td><td>{t.estimatedOpenTime ? itDate(new Date(t.estimatedOpenTime)) + " (stimata)" : "Non ricostruibile"}</td></tr>)}</tbody></table></div>
+          <button type="button" className="primary" onClick={confirmImageImport} disabled={imageImportRows.some(t=>!t.estimatedOpenTime)}>Importa nella tabella settimanale</button>
+        </>}
       </section>
 
       <section className="panel final">
