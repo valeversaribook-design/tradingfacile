@@ -1632,51 +1632,42 @@ export default function LucaTradingAuto() {
     return matching[matching.length - 1].time.toISOString();
   }
 
-  async function loadTradeImages(files) {
-    if (!files?.length) return;
-    if (!candles.length) return alert("Carica prima il CSV XAUUSD: serve per stimare le aperture.");
-    if (files.length > 20) return alert("Carica al massimo 20 immagini per volta.");
-    setImageImportBusy(true);
-    setImageImportStatus("");
-    const all = [];
-    const failures = [];
-    try {
-      for (let i=0; i<files.length; i++) {
-        const file = files[i];
-        setImageImportStatus(`Lettura immagine ${i+1}/${files.length}: ${file.name}`);
-        if (!file.type.startsWith("image/") || file.size > 8_000_000) {
-          failures.push(`${file.name}: formato o dimensione non validi`); continue;
-        }
-        const imageData = await new Promise((resolve,reject)=>{
-          const reader = new FileReader();
-          reader.onload = () => resolve(reader.result);
-          reader.onerror = () => reject(new Error("Impossibile leggere immagine"));
-          reader.readAsDataURL(file);
-        });
-        const response = await fetch("/api/import-images", {
-          method:"POST", headers:{"Content-Type":"application/json"},
-          body:JSON.stringify({imageData})
-        });
-        const raw = await response.text();
-        let data;
-        try { data=JSON.parse(raw); } catch { throw new Error(`Servizio immagini non disponibile (HTTP ${response.status}).`); }
-        if (!response.ok) throw new Error(data.error || "Errore riconoscimento immagini");
-        for (const item of data.trades || []) {
-          const candidate = {...item, sourceImage:file.name};
-          candidate.estimatedOpenTime = estimateOpening(candidate);
-          all.push(candidate);
-        }
+  function parseImportedText() {
+    if (!importText.trim()) return alert("Incolla prima le operazioni.");
+    if (!candles.length) return alert("Carica prima il CSV XAUUSD per stimare gli orari di apertura.");
+    const rows = [];
+    const errors = [];
+    const numeric = v => {
+      const s=String(v).trim().replace(/\\s/g,"");
+      return Number(s.includes(",") ? s.replace(/\\./g,"").replace(",",".") : s);
+    };
+    for (const [index,raw] of importText.split(/\\r?\\n/).entries()) {
+      const line=raw.trim();
+      if (!line || line.startsWith("#") || /^tipo\\s*;/i.test(line)) continue;
+      const f=line.split(";").map(x=>x.trim());
+      if (f.length!==6) {errors.push(index+1);continue;}
+      const [sideRaw,lotRaw,entryRaw,exitRaw,dateRaw,profitRaw]=f;
+      const side=sideRaw.toLowerCase();
+      const lot=numeric(lotRaw),entry=numeric(entryRaw),exit=numeric(exitRaw),profit=numeric(profitRaw);
+      const dateMatch=dateRaw.match(/^(\\d{4})-(\\d{2})-(\\d{2})[ T](\\d{2}):(\\d{2})(?::(\\d{2}))?$/);
+      const closeTime=dateMatch ? new Date(Number(dateMatch[1]),Number(dateMatch[2])-1,Number(dateMatch[3]),Number(dateMatch[4]),Number(dateMatch[5]),Number(dateMatch[6]||0)) : new Date(NaN);
+      if (!["buy","sell"].includes(side) || ![lot,entry,exit,profit].every(Number.isFinite) || lot<=0 || Number.isNaN(closeTime.getTime())) {
+        errors.push(index+1);continue;
       }
-      const unique = new Map();
-      for (const t of all) {
-        const key = [t.side,Number(t.lot).toFixed(2),Number(t.entry).toFixed(2),
-          Number(t.exit).toFixed(2),t.closeTime,Number(t.profit).toFixed(2)].join("|");
-        if (!unique.has(key)) unique.set(key,t);
-      }
-      setImageImportRows([...unique.values()].sort((a,b)=>new Date(a.closeTime)-new Date(b.closeTime)));
-      setImageImportStatus(`${unique.size} operazioni riconosciute. ${failures.join("; ")}`);
-    } catch (e) { alert(e.message || "Errore lettura immagini"); }
-    finally { setImageImportBusy(false); }
+      const row={side,lot,entry,exit,profit,closeTime:closeTime.toISOString(),sourceImage:"testo"};
+      row.estimatedOpenTime=estimateOpening(row);
+      rows.push(row);
+    }
+    if (errors.length) return alert(`Righe non valide: ${errors.join(", ")}. Correggile prima di importare.`);
+    if (!rows.length) return alert("Nessuna operazione valida nel testo.");
+    const unique=new Map();
+    for (const t of rows) {
+      const key=[t.side,t.lot.toFixed(2),t.entry.toFixed(2),t.exit.toFixed(2),t.closeTime,t.profit.toFixed(2)].join("|");
+      if (!unique.has(key)) unique.set(key,t);
+    }
+    const ordered=[...unique.values()].sort((x,y)=>new Date(x.closeTime)-new Date(y.closeTime));
+    setImageImportRows(ordered);
+    setImageImportStatus(`${ordered.length} operazioni riconosciute dal testo; ${ordered.filter(x=>!x.estimatedOpenTime).length} senza apertura ricostruibile dal CSV.`);
   }
 
   function confirmImageImport() {
@@ -1686,8 +1677,8 @@ export default function LucaTradingAuto() {
     const converted = imageImportRows.map(t=>({
       side:t.side, lot:Number(t.lot), entry:Number(t.entry), exit:Number(t.exit),
       openTime:new Date(t.estimatedOpenTime), closeTime:new Date(t.closeTime),
-      profit:Number(t.profit), entrySource:"immagine",exitSource:"immagine",
-      openTimeEstimated:true, sourceImage:t.sourceImage
+      profit:Number(t.profit), entrySource:"testo",exitSource:"testo",
+      openTimeEstimated:true, sourceImage:"testo"
     }));
     // Sostituisce la tabella, non la aggiunge alla generazione precedente.
     setTrades(converted.sort((a,b)=>a.closeTime-b.closeTime));
@@ -1737,7 +1728,7 @@ export default function LucaTradingAuto() {
     <main className="page">
       <header className="top">
         <div>
-          <h1>🥇 Luca Trading Definitivo <small style={{fontSize:12,opacity:.65}}>screen multipli v4</small></h1>
+          <h1>🥇 Luca Trading Definitivo <small style={{fontSize:12,opacity:.65}}>import testo v5</small></h1>
           <p>1) Settaggi sopra · 2) Operazioni sotto · 3) Screenshot finale.</p>
         </div>
         <div style={{display:"flex",gap:"10px",flexWrap:"wrap",alignItems:"center"}}>
@@ -1915,14 +1906,15 @@ export default function LucaTradingAuto() {
       </section>
 
       <section className="panel">
-        <h2>Importa operazioni da immagini</h2>
-        <p className="hint">Carica fino a 20 screenshot Android MT4 nero o LUCA iOS bianco/nero. I dati estratti sono da verificare. L'ora di apertura non è visibile: viene stimata dal CSV, mai presentata come certa.</p>
-        <input type="file" accept="image/png,image/jpeg,image/webp" multiple disabled={imageImportBusy} onChange={e=>loadTradeImages(Array.from(e.target.files || []))}/>
+        <h2>Importa operazioni da testo (senza API)</h2>
+        <p className="hint">Una riga per operazione: TIPO;LOTTO;ENTRATA;USCITA;AAAA-MM-GG HH:MM:SS;PROFITTO. Decimali con punto o virgola.</p>
+        <textarea rows={9} style={{width:"100%",resize:"vertical"}} value={importText} onChange={e=>setImportText(e.target.value)} placeholder={"SELL;0.02;4084.74;4011.00;2026-10-23 03:38:05;147.48\nBUY;0.05;4007.22;4016.93;2026-10-23 08:12:04;48.55"}/>
+        <div className="actions"><button type="button" className="primary" onClick={parseImportedText}>Leggi e verifica operazioni</button></div>
         {imageImportStatus && <p role="status">{imageImportStatus}</p>}
         {imageImportRows.length>0 && <>
           <div style={{overflowX:"auto"}}><table><thead><tr><th>Tipo</th><th>Lotto</th><th>Entrata</th><th>Uscita</th><th>Chiusura</th><th>P/L</th><th>Apertura stimata</th></tr></thead>
           <tbody>{imageImportRows.map((t,i)=><tr key={i}><td>{t.side.toUpperCase()}</td><td>{Number(t.lot).toFixed(2)}</td><td>{price(t.entry)}</td><td>{price(t.exit)}</td><td>{itDate(new Date(t.closeTime))}</td><td>{money(t.profit)}</td><td>{t.estimatedOpenTime ? itDate(new Date(t.estimatedOpenTime)) + " (stimata)" : "Non ricostruibile"}</td></tr>)}</tbody></table></div>
-          <button type="button" className="primary" onClick={confirmImageImport} disabled={imageImportRows.some(t=>!t.estimatedOpenTime)}>Importa nella tabella settimanale</button>
+          <button type="button" className="primary" onClick={confirmImageImport} disabled={imageImportRows.some(t=>!t.estimatedOpenTime)}>Importa nella tabella</button>
         </>}
       </section>
 
