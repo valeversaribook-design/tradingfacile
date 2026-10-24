@@ -1555,8 +1555,8 @@ export default function LucaTradingAuto() {
       if (field === "lot") u.lot = toNum(value);
       if (field === "entry") u.entry = toNum(value);
       if (field === "exit") u.exit = toNum(value);
-      if (field === "openDate") u.openTime = dateFromInputs(value, htmlTime(t.openTime));
-      if (field === "openTime") u.openTime = dateFromInputs(htmlDate(t.openTime), value);
+      if (field === "openDate") u.openTime = value ? dateFromInputs(value, t.openTime ? htmlTime(t.openTime) : "00:00:00") : null;
+      if (field === "openTime") u.openTime = value ? dateFromInputs(t.openTime ? htmlDate(t.openTime) : htmlDate(t.closeTime), value) : null;
       if (field === "closeDate") u.closeTime = dateFromInputs(value, htmlTime(t.closeTime));
       if (field === "closeTime") u.closeTime = dateFromInputs(htmlDate(t.closeTime), value);
 
@@ -1621,21 +1621,8 @@ export default function LucaTradingAuto() {
     downloadBlob(await zip.generateAsync({type:"blob"}),"luca_trading_reports.zip");
   }
 
-  function estimateOpening(row) {
-    // La sola quotazione non identifica un'apertura univoca: scegliamo la
-    // candela compatibile più recente, marcando l'orario come STIMATO.
-    const close = new Date(row.closeTime);
-    const priceIn = Number(row.entry);
-    const matching = candles.filter(c => c.time < close &&
-      c.time >= new Date(close.getTime() - 72 * 3600000) &&
-      Number(c.low) <= priceIn && Number(c.high) >= priceIn);
-    if (!matching.length) return null;
-    return matching[matching.length - 1].time.toISOString();
-  }
-
   function parseImportedText() {
     if (!importText.trim()) return alert("Incolla prima le operazioni.");
-    if (!candles.length) return alert("Carica prima il CSV XAUUSD per stimare gli orari di apertura.");
     const rows = [];
     const errors = [];
     const numeric = v => {
@@ -1656,7 +1643,6 @@ export default function LucaTradingAuto() {
         errors.push(index+1);continue;
       }
       const row={side,lot,entry,exit,profit,closeTime:closeTime.toISOString(),sourceImage:"testo"};
-      row.estimatedOpenTime=estimateOpening(row);
       rows.push(row);
     }
     if (errors.length) return alert(`Righe non valide: ${errors.join(", ")}. Correggile prima di importare.`);
@@ -1668,23 +1654,21 @@ export default function LucaTradingAuto() {
     }
     const ordered=[...unique.values()].sort((x,y)=>new Date(x.closeTime)-new Date(y.closeTime));
     setImageImportRows(ordered);
-    setImageImportStatus(`${ordered.length} operazioni riconosciute dal testo; ${ordered.filter(x=>!x.estimatedOpenTime).length} senza apertura ricostruibile dal CSV.`);
+    setImageImportStatus(`${ordered.length} operazioni riconosciute dal testo, pronte per l’importazione senza orari di apertura.`);
   }
 
   function confirmImageImport() {
     if (!imageImportRows.length) return;
-    const unresolved = imageImportRows.filter(t=>!t.estimatedOpenTime);
-    if (unresolved.length) return alert(`${unresolved.length} operazioni senza apertura compatibile nel CSV. Non invento orari: carica un CSV più completo oppure correggi i dati di origine.`);
     const converted = imageImportRows.map(t=>({
       side:t.side, lot:Number(t.lot), entry:Number(t.entry), exit:Number(t.exit),
-      openTime:new Date(t.estimatedOpenTime), closeTime:new Date(t.closeTime),
+      openTime:null, closeTime:new Date(t.closeTime),
       profit:Number(t.profit), entrySource:"testo",exitSource:"testo",
-      openTimeEstimated:true, sourceImage:"testo"
+      openTimeEstimated:false, sourceImage:"testo"
     }));
     // Sostituisce la tabella, non la aggiunge alla generazione precedente.
     setTrades(converted.sort((a,b)=>a.closeTime-b.closeTime));
     setAutoSets([{name:"screen_01",trades:converted}]);
-    setImageImportStatus(`Importate ${converted.length} operazioni. Aperture STIMATE dal CSV, non confermate dal broker.`);
+    setImageImportStatus(`Importate ${converted.length} operazioni senza orari di apertura.`);
   }
 
   function addBlankTrade() {
@@ -1848,8 +1832,8 @@ export default function LucaTradingAuto() {
                 <td>{i + 1}</td>
                 <td><select className="table-input" value={t.side} onChange={e => updateTrade(i, "side", e.target.value)}><option value="buy">BUY</option><option value="sell">SELL</option></select></td>
                 <td><input className="table-input small" type="number" step="0.01" value={t.lot} onChange={e => updateTrade(i, "lot", e.target.value)}/></td>
-                <td><input className="table-input date" type="date" value={htmlDate(t.openTime)} onChange={e => updateTrade(i, "openDate", e.target.value)}/></td>
-                <td><input className="table-input time" value={htmlTime(t.openTime)} onChange={e => updateTrade(i, "openTime", e.target.value)}/></td>
+                <td><input className="table-input date" type="date" value={t.openTime ? htmlDate(t.openTime) : ""} onChange={e => updateTrade(i, "openDate", e.target.value)}/></td>
+                <td><input className="table-input time" value={t.openTime ? htmlTime(t.openTime) : ""} onChange={e => updateTrade(i, "openTime", e.target.value)}/></td>
                 <td><input className="table-input price" type="number" step="0.01" value={t.entry} onChange={e => updateTrade(i, "entry", e.target.value)}/>{t.entrySource && <small className="source">CSV {t.entrySource}</small>}</td>
                 <td><input className="table-input date" type="date" value={htmlDate(t.closeTime)} onChange={e => updateTrade(i, "closeDate", e.target.value)}/></td>
                 <td><input className="table-input time" value={htmlTime(t.closeTime)} onChange={e => updateTrade(i, "closeTime", e.target.value)}/></td>
@@ -1913,9 +1897,9 @@ export default function LucaTradingAuto() {
         <div className="actions"><button type="button" className="primary" onClick={parseImportedText}>Leggi e verifica operazioni</button></div>
         {imageImportStatus && <p role="status">{imageImportStatus}</p>}
         {imageImportRows.length>0 && <>
-          <div style={{overflowX:"auto"}}><table><thead><tr><th>Tipo</th><th>Lotto</th><th>Entrata</th><th>Uscita</th><th>Chiusura</th><th>P/L</th><th>Apertura stimata</th></tr></thead>
-          <tbody>{imageImportRows.map((t,i)=><tr key={i}><td>{t.side.toUpperCase()}</td><td>{Number(t.lot).toFixed(2)}</td><td>{price(t.entry)}</td><td>{price(t.exit)}</td><td>{itDate(new Date(t.closeTime))}</td><td>{money(t.profit)}</td><td>{t.estimatedOpenTime ? itDate(new Date(t.estimatedOpenTime)) + " (stimata)" : "Non ricostruibile"}</td></tr>)}</tbody></table></div>
-          <button type="button" className="primary" onClick={confirmImageImport} disabled={imageImportRows.some(t=>!t.estimatedOpenTime)}>Importa nella tabella</button>
+          <div style={{overflowX:"auto"}}><table><thead><tr><th>Tipo</th><th>Lotto</th><th>Entrata</th><th>Uscita</th><th>Chiusura</th><th>P/L</th></tr></thead>
+          <tbody>{imageImportRows.map((t,i)=><tr key={i}><td>{t.side.toUpperCase()}</td><td>{Number(t.lot).toFixed(2)}</td><td>{price(t.entry)}</td><td>{price(t.exit)}</td><td>{itDate(new Date(t.closeTime))}</td><td>{money(t.profit)}</td></tr>)}</tbody></table></div>
+          <button type="button" className="primary" onClick={confirmImageImport} >Importa nella tabella</button>
         </>}
       </section>
 
