@@ -722,9 +722,11 @@ function renderReportBlob(trades, layout, tab, deposit, credit, withdrawal, visi
   // Giorno e Settimana: nello screen mostriamo SOLO le ultime 9 operazioni
   // (ordinate cronologicamente), ma Profitto/Saldo restano calcolati su TUTTE.
   const orderedAllForScreen = [...trades].sort((a, b) => new Date(a.closeTime) - new Date(b.closeTime));
-  const visibleTrades = (tab === "Day" || tab === "Week")
-    ? orderedAllForScreen.slice(-9)
-    : orderedAllForScreen;
+  const visibleTrades = visiblePageTrades !== null
+    ? visiblePageTrades
+    : ((tab === "Day" || tab === "Week")
+        ? orderedAllForScreen.slice(-9)
+        : orderedAllForScreen);
 
   const isDark = layout.includes("dark");
   const isAndroid = layout.includes("android");
@@ -1583,19 +1585,21 @@ export default function LucaTradingAuto() {
         price(t.entry),itDate(t.closeTime),price(t.exit),Number(t.profit).toFixed(2)
       ].join(","));
     }
-    zip.file("operazioni_generate.csv", csv.join("\\n"));
+    zip.file("operazioni_generate.csv", csv.join("\n"));
     const blob = await zip.generateAsync({type:"blob"});
     downloadBlob(blob, filename);
   }
 
   async function screenshot() {
     if (!trades.length) return alert("Prima genera o importa almeno una operazione.");
-    if (trades.length > 9) {
-      await downloadPagedReports(trades, "luca_trading_screenshot_multipli.zip");
-      return;
-    }
     const blob = await renderReportBlob(trades, layout, tab, deposit, credit, withdrawal);
+    if (!blob) return alert("Impossibile creare lo screenshot.");
     downloadBlob(blob, "luca_trading_report.png");
+  }
+
+  async function screenshotMultipli() {
+    if (!trades.length) return alert("Prima genera o importa almeno una operazione.");
+    await downloadPagedReports(trades, "luca_trading_screenshot_multipli.zip");
   }
 
   async function downloadAutoZip() {
@@ -1733,10 +1737,13 @@ export default function LucaTradingAuto() {
     <main className="page">
       <header className="top">
         <div>
-          <h1>🥇 Luca Trading Definitivo <small style={{fontSize:12,opacity:.65}}>overnight totale v3</small></h1>
+          <h1>🥇 Luca Trading Definitivo <small style={{fontSize:12,opacity:.65}}>screen multipli v4</small></h1>
           <p>1) Settaggi sopra · 2) Operazioni sotto · 3) Screenshot finale.</p>
         </div>
-        <button className="primary" onClick={screenshot}>Scarica screenshot</button>
+        <div style={{display:"flex",gap:"10px",flexWrap:"wrap",alignItems:"center"}}>
+          <button className="primary" onClick={screenshot}>Scarica screenshot</button>
+          <button type="button" className="primary" onClick={screenshotMultipli}>Screen multipli</button>
+        </div>
       </header>
 
       <section className="panel">
@@ -1922,7 +1929,7 @@ export default function LucaTradingAuto() {
       <section className="panel final">
         <h2>3. Screenshot</h2>
         <p>Quando le operazioni sono corrette, scarica lo screenshot finale.</p>
-        <button className="primary big" onClick={screenshot}>Scarica screenshot (multipli se necessari)</button>
+        <button className="primary big" onClick={screenshot}>Scarica screenshot finale</button>
       </section>
 
 
