@@ -1042,6 +1042,7 @@ export default function LucaTradingAuto() {
   const [includePreviousDayTrade, setIncludePreviousDayTrade] = useState(false);
   const [operationPreference, setOperationPreference] = useState("auto");
   const [imageImportRows, setImageImportRows] = useState([]);
+  const [importText, setImportText] = useState("");
   const [imageImportBusy, setImageImportBusy] = useState(false);
   const [imageImportStatus, setImageImportStatus] = useState("");
 
@@ -1638,18 +1639,18 @@ export default function LucaTradingAuto() {
     const rows = [];
     const errors = [];
     const numeric = v => {
-      const s=String(v).trim().replace(/\\s/g,"");
-      return Number(s.includes(",") ? s.replace(/\\./g,"").replace(",",".") : s);
+      const s=String(v).trim().replace(/\s/g,"");
+      return Number(s.includes(",") ? s.replace(/\./g,"").replace(",",".") : s);
     };
-    for (const [index,raw] of importText.split(/\\r?\\n/).entries()) {
+    for (const [index,raw] of importText.split(/\r?\n/).entries()) {
       const line=raw.trim();
-      if (!line || line.startsWith("#") || /^tipo\\s*;/i.test(line)) continue;
+      if (!line || line.startsWith("#") || /^tipo\s*;/i.test(line)) continue;
       const f=line.split(";").map(x=>x.trim());
       if (f.length!==6) {errors.push(index+1);continue;}
       const [sideRaw,lotRaw,entryRaw,exitRaw,dateRaw,profitRaw]=f;
       const side=sideRaw.toLowerCase();
       const lot=numeric(lotRaw),entry=numeric(entryRaw),exit=numeric(exitRaw),profit=numeric(profitRaw);
-      const dateMatch=dateRaw.match(/^(\\d{4})-(\\d{2})-(\\d{2})[ T](\\d{2}):(\\d{2})(?::(\\d{2}))?$/);
+      const dateMatch=dateRaw.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/);
       const closeTime=dateMatch ? new Date(Number(dateMatch[1]),Number(dateMatch[2])-1,Number(dateMatch[3]),Number(dateMatch[4]),Number(dateMatch[5]),Number(dateMatch[6]||0)) : new Date(NaN);
       if (!["buy","sell"].includes(side) || ![lot,entry,exit,profit].every(Number.isFinite) || lot<=0 || Number.isNaN(closeTime.getTime())) {
         errors.push(index+1);continue;
